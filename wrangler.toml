@@ -4,6 +4,7 @@ name = "dnd-companion"
 main = "worker/index.js"
 compatibility_date = "2025-10-01"
 workers_dev = true
+preview_urls = false
 
 [vars]
 APP_URL = "https://dimazako.github.io/DnDCompanion/"
