@@ -39,7 +39,7 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 textarea { min-height: 90px; resize: vertical; }
-input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+input[type=checkbox], input[type=radio] { width: 20px; height: 20px; padding: 0; margin: 0; accent-color: var(--accent); flex: none; }
 label.fld { display: block; margin: 10px 0 0; }
 label.fld > span { display: block; font-size: 12px; color: var(--hint); margin-bottom: 4px; }
 .row { display: flex; gap: 8px; align-items: center; }
@@ -220,3 +220,5 @@ label.fld > span { display: block; font-size: 12px; color: var(--hint); margin-b
 .empty { text-align: center; color: var(--hint); padding: 22px 10px; }
 .empty .e { font-size: 40px; display: block; margin-bottom: 6px; }
 details summary { cursor: pointer; color: var(--link); padding: 6px 0; }
+.pick .grow small { display: block; margin-top: 2px; line-height: 1.35; }
+.pick .v { flex: none; font-size: 12px; }

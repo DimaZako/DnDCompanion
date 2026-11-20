@@ -1,6 +1,6 @@
 // DnD Companion — Telegram Mini App
 import * as R from './shared/rules.js';
-import { CATALOG } from './data/items.js';
+import { CATALOG, BASE_WEAPONS } from './data/items.js';
 
 const tg = window.Telegram && window.Telegram.WebApp;
 const CFG = window.DND_CONFIG || {};
@@ -28,6 +28,16 @@ const ITEM_ICON = { weapon: '⚔️', armor: '🥋', shield: '🛡️', ammo: '�
 const raceName = (s) => (s.raceId === 'custom' ? (s.raceName || 'Інша раса') : (R.RACES[s.raceId] ? R.RACES[s.raceId].name : '—'));
 const className = (s) => (R.CLASSES[s.classId] ? R.CLASSES[s.classId].name : '—');
 const bgName = (s) => (R.BACKGROUNDS[s.backgroundId] ? R.BACKGROUNDS[s.backgroundId].name : '—');
+const nowSec = () => Math.floor(Date.now() / 1000);
+// Для старих предметів без шкоди беремо базову зброю з каталогу
+function withBase(d) {
+  if (d && d.type === 'weapon' && !d.damage && d.catalogId) {
+    const c = CATALOG.find((x) => x.catalogId === d.catalogId);
+    if (c && c.damage) return { ...d, damage: c.damage, dmgType: c.dmgType, props: d.props || c.props, ranged: c.ranged };
+  }
+  return d;
+}
+const SRC_LABEL = { race: 'Раса', class: 'Клас', subclass: 'Підклас', choice: 'Вибір', feat: 'Риса', custom: 'Від майстра' };
 const moneyStr = (m) => R.COINS.filter((k) => m && m[k]).map((k) => `${m[k]} ${R.COIN_NAMES[k]}`).join(', ') || '0';
 
 let toastTimer = null;
@@ -265,6 +275,7 @@ function masterRoomHtml(d) {
     <button class="btn primary" data-act="invite">📨 Запросити</button></div>
     <small class="hint">Сесія ${r.session} · гравців ${players.length}/${d.maxPlayers}</small></div>
   <div class="btns"><button class="btn" data-act="openLog">📜 Журнал</button><button class="btn" data-act="endSession">🏁 Завершити сесію</button></div>
+  <div class="btns"><button class="btn sm" data-act="restAll" data-kind="short">☕ Короткий відпочинок для всіх</button><button class="btn sm" data-act="restAll" data-kind="long">🌙 Довгий для всіх</button></div>
   <h3 class="sec">Гравці</h3>
   ${players.length ? players.map(playerCard).join('') : empty('🕯️', 'Поки нікого. Надішли гравцям запрошення.')}
   ${d.fallen.length ? `<details class="mt"><summary>☠ Загиблі персонажі (${d.fallen.length})</summary>
@@ -285,7 +296,7 @@ function playerCard(p) {
     <div class="meta"><b>${esc(s.name)}</b><small>${esc(raceName(s))} · ${esc(className(s))} ${s.level} рів. · ${esc(p.name)}</small></div>
     <div class="center"><small>КЗ</small><div><b>${dv.ac}</b></div></div><span class="chev">›</span></div>
     <div class="row mt" style="margin-top:8px"><small class="grow">ХП ${s.hp.cur}/${s.hp.max}${s.hp.temp ? ` (+${s.hp.temp})` : ''}</small>
-    ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${s.inspiration ? '<span class="badge gold">⭐</span>' : ''}</div>
+    ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${R.shortRestActive(s, nowSec()) ? ' <span class="badge green">☕</span>' : ''}${s.inspiration ? '<span class="badge gold">⭐</span>' : ''}</div>
     <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div></div>`;
 }
 function playerNoCharHtml(d) {
@@ -321,6 +332,16 @@ function charHtml(ch, M) {
     h += M ? `<div class="card"><span class="badge gold">⬆️ Гравцю доступне підвищення до ${s.targetLevel} рівня</span></div>`
       : `<button class="banner" data-act="openLevelUp">⬆️ Доступне підвищення до ${s.level + 1} рівня!<small>Натисни, щоб пройти підвищення за правилами 5e</small></button>`;
   }
+  if (R.shortRestActive(s, nowSec())) {
+    const hd = (R.CLASSES[s.classId] || { hd: 8 }).hd;
+    const left = s.level - (s.hitDiceUsed || 0);
+    const con = R.mod(s.abilities.con);
+    h += M ? `<div class="card"><span class="badge green">☕ Короткий відпочинок триває</span> <small class="hint">кості хітів: ${left}/${s.level}</small></div>`
+      : `<div class="card" style="border:1.5px solid #2fbf4a"><h3>☕ Короткий відпочинок</h3>
+      <p class="hint">Витрачай кості хітів, щоб відновити ХП. Доступно: ${left}/${s.level} × к${hd}${con ? ` ${fm(con)}` : ''}</p>
+      <div class="btns"><button class="btn primary ${left > 0 && s.hp.cur < s.hp.max ? '' : 'disabled'}" data-act="spendHD">🎲 Кинути к${hd}${con ? fm(con) : ''}</button>
+      <button class="btn" data-act="endRest">Завершити відпочинок</button></div></div>`;
+  }
   if (M) {
     h += `<div class="toolbar">
       <button class="btn" data-act="editSheet"><span class="e">✏️</span>Характеристики</button>
@@ -330,7 +351,7 @@ function charHtml(ch, M) {
       <button class="btn" data-act="moneyModal" data-mode="set"><span class="e">💰</span>Гроші</button>
       <button class="btn" data-act="charMore"><span class="e">⋯</span>Ще</button></div>`;
   }
-  const tabs = [['sheet', 'Лист'], ['spells', 'Закляття'], ['info', 'Інфо'], ['inv', 'Інвентар']];
+  const tabs = [['sheet', 'Лист'], ['spells', 'Вміння'], ['info', 'Інфо'], ['inv', 'Інвентар']];
   h += `<div class="tabs">${tabs.map(([k, t]) => `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}">${t}</button>`).join('')}</div>`;
   if (S.tab === 'spells') h += spellsTab(ch, dv, M);
   else if (S.tab === 'info') h += infoTab(ch);
@@ -356,12 +377,13 @@ function sheetTab(ch, dv) {
     <div class="ln"><span>Кості хітів</span><span class="v">${s.level - s.hitDiceUsed}/${s.level} × к${cls ? cls.hd : '?'}</span></div>
     <div class="ln"><span>Рятівні від смерті</span><span class="v">✅ ${s.deathSaves.s}/3 · ❌ ${s.deathSaves.f}/3</span></div>
     <div class="ln"><span>Натхнення</span><span class="v">${s.inspiration ? '⭐ є' : '—'}</span></div></div>`;
-  const weapons = (ch.items || []).filter((it) => it.data.type === 'weapon' && it.data.damage)
-    .sort((a, b) => Number(b.equipped) - Number(a.equipped));
-  h += `<div class="lines"><h3>Атаки</h3>${weapons.length ? weapons.map((it) => {
-    const w = R.weaponAttack(s, it.data);
-    return `<div class="ln rc-${it.data.rarity}" data-act="itemModal" data-id="${it.id}"><span class="rname">${esc(it.data.name)}</span>${it.equipped ? ' <span class="badge">в руках</span>' : ''}
-    <span class="v">${fm(w.hit)} · ${esc(w.dmg)}</span></div>`;
+  const weapons = (ch.items || []).map((it) => ({ it, d: withBase(it.data) }))
+    .filter(({ d }) => d.type === 'weapon' || (['staff', 'rod'].includes(d.type) && d.damage))
+    .sort((a, b) => Number(b.it.equipped) - Number(a.it.equipped));
+  h += `<div class="lines"><h3>Атаки</h3>${weapons.length ? weapons.map(({ it, d }) => {
+    const w = R.weaponAttack(s, d);
+    return `<div class="ln rc-${esc(d.rarity)}" data-act="itemModal" data-id="${it.id}" style="cursor:pointer"><span class="grow"><span class="rname">${esc(d.name)}</span>${it.equipped ? ' <span class="badge">в руках</span>' : ''}
+    ${d.damage2 ? `<br><small>${esc(d.damage2)}</small>` : ''}</span><span class="v">${fm(w.hit)} · ${d.damage ? esc(w.dmg) : 'шкода не вказана'}</span></div>`;
   }).join('') : '<div class="ln hint">Немає зброї в інвентарі</div>'}</div>`;
   h += textSection(s, 'proficiencies');
   return h;
@@ -373,25 +395,42 @@ function textSection(s, key, title) {
   <div class="textblock ${t ? '' : 'empty'}">${t ? esc(t) : 'Порожньо'}</div></div>`;
 }
 
-function spellsTab(ch, dv) {
+function spellsTab(ch, dv, M) {
   const s = ch.sheet;
-  const ab = R.spellAbility(s);
-  const m = R.mod(s.abilities[ab]);
+  let h = '';
+  // Ресурси класу
+  const res = R.sheetResources(s);
+  if (res.length) {
+    h += `<div class="lines"><h3>Ресурси</h3>${res.map((r) => {
+      const icon = r.recharge === 'short' ? '☕' : '🌙';
+      if (r.pool || r.max > 12) {
+        return `<div class="ln"><span class="grow">${esc(r.name)} <span class="hint">${icon}</span></span><span class="v">${r.max - r.used}/${r.max}</span>
+        <button class="btn sm" data-act="poolModal" data-id="${r.id}">${M ? 'Змінити' : 'Витратити'}</button></div>`;
+      }
+      return `<div class="ln"><span style="min-width:120px">${esc(r.name)} <span class="hint">${icon}</span></span>
+        <div class="slots">${Array.from({ length: r.max }, (_, j) => `<button class="slot ${j < r.used ? 'used' : 'free'}" data-act="res" data-id="${r.id}" data-j="${j}"></button>`).join('')}</div>
+        <span class="v hint">${r.max - r.used}/${r.max}</span></div>`;
+    }).join('')}<div class="ln"><span class="hint">☕ — відновлюється на короткому, 🌙 — на довгому відпочинку (оголошує майстер).</span></div></div>`;
+  }
+  // Заклинання
+  const caster = R.isCaster(s);
   const slots = dv.slots;
   const used = s.spell.slotsUsed || [];
-  let h = `<div class="lines"><h3>Заклинання</h3>
-    <div class="ln"><span>Характеристика</span><span class="v">${R.ABILITY_NAMES[ab]}</span></div>
-    <div class="ln"><span>СК рятівного кидка</span><span class="v">${8 + dv.prof + m}</span></div>
-    <div class="ln"><span>Бонус атаки закляттям</span><span class="v">${fm(dv.prof + m)}</span></div></div>`;
+  if (caster) {
+    const ab = R.spellAbility(s);
+    const m = R.mod(s.abilities[ab]);
+    h += `<div class="lines"><h3>Заклинання</h3>
+      <div class="ln"><span>Характеристика</span><span class="v">${R.ABILITY_NAMES[ab]}</span></div>
+      <div class="ln"><span>СК рятівного кидка</span><span class="v">${8 + dv.prof + m}</span></div>
+      <div class="ln"><span>Бонус атаки закляттям</span><span class="v">${fm(dv.prof + m)}</span></div></div>`;
+  }
   if (slots.some((x) => x > 0)) {
     h += `<div class="lines"><h3>Комірки заклять</h3>${slots.map((max, i) => (max ? `<div class="ln"><span style="min-width:62px">${i + 1} коло</span>
       <div class="slots">${Array.from({ length: max }, (_, j) => `<button class="slot ${j < (used[i] || 0) ? 'used' : 'free'}" data-act="slot" data-l="${i}" data-j="${j}"></button>`).join('')}</div>
       <span class="v hint">${max - (used[i] || 0)}/${max}</span></div>` : '')).join('')}
-      <div class="ln"><span class="hint">Натисни на комірку, щоб позначити використання.</span></div></div>`;
+      <div class="ln"><span class="hint">Натисни на комірку, щоб витратити. Відновлюються на відпочинку.</span></div></div>`;
   }
-  h += `<div class="btns"><button class="btn" data-act="longRest">🌙 Довгий відпочинок</button><button class="btn primary" data-act="spellForm">＋ Закляття</button></div>`;
   const list = s.spell.spells || [];
-  if (!list.length) h += empty('📖', 'Список заклять порожній. Додай закляття або вміння.');
   for (let lvl = 0; lvl <= 9; lvl++) {
     const sp = list.filter((x) => x.level === lvl);
     if (!sp.length) continue;
@@ -400,7 +439,25 @@ function spellsTab(ch, dv) {
       <span class="grow" data-act="spellModal" data-id="${esc(x.id)}" style="cursor:pointer"><b>${esc(x.name)}</b>${x.conc ? ' <span class="badge">К</span>' : ''}${x.ritual ? ' <span class="badge">Р</span>' : ''}
       <br><small>${esc([x.school, x.time, x.range].filter(Boolean).join(' · '))}</small></span></div>`).join('')}</div>`;
   }
-  h += textSection(s, 'features');
+  h += `<div class="btns"><button class="btn" data-act="spellForm">＋ ${caster ? 'Закляття' : 'Закляття (расове чи від предмета)'}</button></div>`;
+  // Вміння та риси
+  const feats = Array.isArray(s.features) ? s.features.map((x, i) => ({ ...x, _i: i })) : null;
+  h += '<div class="lines"><div class="row"><h3 class="grow">Вміння та риси</h3>';
+  if (M && feats) h += '<button class="link" data-act="featureForm">＋ Додати</button>';
+  h += '</div>';
+  if (!feats) {
+    h += `<div class="textblock empty">Вміння за класом з’являться після наступного підвищення рівня.</div>
+      ${M ? '<button class="btn sm" data-act="fillFeatures" style="margin-bottom:12px">⚙️ Заповнити за класом і рівнем</button>' : ''}`;
+  } else if (!feats.length) h += '<div class="textblock empty">Порожньо</div>';
+  else {
+    const order = ['race', 'class', 'subclass', 'choice', 'feat', 'custom'];
+    for (const src of order) {
+      const part = feats.filter((x) => (x.src || 'custom') === src).sort((a, b) => a.lvl - b.lvl);
+      if (part.length) h += `<div class="spell-lvl">${SRC_LABEL[src]}</div>${featureListHtml(part, { showLvl: src !== 'race', del: M })}`;
+    }
+  }
+  h += '</div>';
+  h += textSection(s, 'features', 'Нотатки до вмінь');
   return h;
 }
 
@@ -440,12 +497,49 @@ function itemRow(it) {
   <div class="meta"><div class="nm">${esc(d.name)}</div><small>${esc(itemSub(d, it))}</small></div><span class="q">×${it.qty}</span></div>`;
 }
 
+// ---------- Вибори класу (спільне для створення й підвищення) ----------
+function getPath(path) { return path.split('.').reduce((o, k) => (o == null ? o : o[k]), S); }
+function rerenderFor(path) { if (path.startsWith('modal')) renderModal(); else render(); }
+function subclassSummary(classId, id) {
+  const sc = R.CLASS_DATA[classId].subclasses[id];
+  return Object.entries(sc.features || {}).map(([l, list]) => `${l}: ${list.map((x) => x[0]).join(', ')}`).join(' · ')
+    || (sc.choices || []).map((c) => c.name).join(', ');
+}
+function subclassPickerHtml(classId, selected, path) {
+  const cd = R.CLASS_DATA[classId];
+  return `<div class="card"><h3>${esc(cd.subclassLabel)}</h3><p class="hint">Обери один варіант — його вміння додадуться автоматично.</p>
+  ${Object.entries(cd.subclasses).map(([id, sc]) => `<div class="pick" data-act="pickSubclass" data-path="${path}" data-k="${id}">
+    <input type="radio" ${selected === id ? 'checked' : ''} tabindex="-1" style="pointer-events:none">
+    <span class="grow"><b>${esc(sc.name)}</b><br><small>${esc(subclassSummary(classId, id))}</small></span></div>`).join('')}</div>`;
+}
+// specs — R.pendingChoices(...); optSheet — лист для перевірки доступності варіантів
+function choicesHtml(specs, optSheet, level, path, picks) {
+  return specs.map((spec) => {
+    const opts = R.choiceOptions(spec, optSheet, level);
+    const sel = picks[spec.id] || [];
+    return `<div class="card"><h3>${esc(spec.name)}</h3><p class="hint">Обери ${spec.need} (${sel.length}/${spec.need})</p>
+    ${opts.map((op) => {
+      const on = sel.includes(op.id);
+      const dis = op.disabled || (!on && sel.length >= spec.need && spec.need > 1);
+      return `<div class="pick ${dis && !on ? 'disabled' : ''}" data-act="pickChoice" data-path="${path}" data-spec="${spec.id}" data-k="${op.id}" data-max="${spec.need}">
+      <input type="${spec.need === 1 ? 'radio' : 'checkbox'}" ${on ? 'checked' : ''} tabindex="-1" style="pointer-events:none">
+      <span class="grow"><b>${esc(op.name)}</b>${op.desc ? `<br><small>${esc(op.desc)}</small>` : ''}</span>${op.reason ? `<span class="v hint">${esc(op.reason)}</span>` : ''}</div>`;
+    }).join('')}</div>`;
+  }).join('');
+}
+function featureListHtml(list, opts = {}) {
+  if (!list.length) return '';
+  return list.map((x) => `<div class="ln" style="align-items:flex-start"><span class="grow"><b>${esc(x.name)}</b>
+    ${opts.showLvl ? ` <span class="badge">${x.lvl} рів.</span>` : ''}${opts.showSrc ? ` <span class="badge">${SRC_LABEL[x.src] || ''}</span>` : ''}
+    ${x.desc ? `<br><small>${esc(x.desc)}</small>` : ''}</span>${opts.del ? `<button class="x" data-act="delFeature" data-i="${x._i}">✕</button>` : ''}</div>`).join('');
+}
+
 // ---------- Створення персонажа ----------
 function newWizard() {
   return {
     step: 1, name: '', raceId: '', classId: '', backgroundId: '', alignment: '',
     method: 'standard', assign: {}, pb: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
-    rolls: (S.room && S.room.lastRoll) || null, raceChoice: [], skills: [], raceSkills: [], bgSkills: [], expertise: [], text: {},
+    rolls: (S.room && S.room.lastRoll) || null, raceChoice: [], skills: [], raceSkills: [], bgSkills: [], expertise: [], text: {}, subclassId: '', choices: {},
   };
 }
 function wizPool() { const w = S.wiz; return w.method === 'standard' ? R.STANDARD_ARRAY : (w.rolls || []); }
@@ -469,6 +563,7 @@ function wizInput() {
   return {
     name: w.name, raceId: w.raceId, classId: w.classId, backgroundId: w.backgroundId, alignment: w.alignment,
     base: wizBase() || {}, raceChoice: w.raceChoice, skills: w.skills, raceSkills: w.raceSkills, bgSkills: w.bgSkills, expertise: w.expertise, text: w.text,
+    subclassId: w.subclassId, choices: w.choices,
   };
 }
 function wizFixedSkills() {
@@ -617,6 +712,13 @@ function wizStep3() {
     h += `<div class="card"><h3>Експертиза</h3><p class="hint">Подвоєний бонус майстерності для ${exp} навичок (${w.expertise.length}/${exp})</p>
       ${pickList('expertise', prof, exp)}</div>`;
   }
+  const cd = R.CLASS_DATA[w.classId];
+  if (cd && cd.subclassLevel === 1) h += subclassPickerHtml(w.classId, w.subclassId, 'wiz.subclassId');
+  const pre = R.buildCharacter({ ...wizInput(), choices: {} }).sheet;
+  if (pre && !R.subclassNeeded(pre, 1)) {
+    const specs = R.pendingChoices(pre, 1);
+    if (specs.length) h += `<h3 class="sec">Вибори 1 рівня</h3>${choicesHtml(specs, pre, 1, 'wiz.choices', w.choices)}`;
+  }
   return h;
 }
 function wizStep4() {
@@ -630,7 +732,8 @@ function wizStep4() {
     <div class="stat"><small>Ініціат.</small><b>${fm(R.mod(sheet.abilities.dex))}</b></div><div class="stat"><small>Швидк.</small><b>${sheet.speed}</b></div>
     <div class="stat"><small>Майст.</small><b>${fm(dv.prof)}</b></div></div>
     <div class="abil mt">${R.ABILITIES.map((a) => `<div class="box"><small>${R.ABILITY_SHORT[a]}</small><div class="m">${fm(R.mod(sheet.abilities[a]))}</div><span class="s">${sheet.abilities[a]}</span></div>`).join('')}</div>
-    <div class="card"><small class="hint">Навички: ${Object.keys(sheet.skills).map((k) => R.SKILLS[k][0] + (sheet.skills[k] === 2 ? ' (експ.)' : '')).join(', ')}</small></div>`;
+    <div class="card"><small class="hint">Навички: ${Object.keys(sheet.skills).map((k) => R.SKILLS[k][0] + (sheet.skills[k] === 2 ? ' (експ.)' : '')).join(', ')}</small></div>
+    <div class="lines"><h3>Вміння та риси</h3>${featureListHtml(sheet.features || [], { showSrc: true })}</div>`;
   }
   h += `<div class="card"><h3>Опис (можна заповнити пізніше)</h3>
     <label class="fld"><span>Зовнішність</span><textarea data-bind="wiz.text.appearance" maxlength="4000">${esc(w.text.appearance || '')}</textarea></label>
@@ -691,7 +794,9 @@ function editSheetHtml() {
     <div class="grid2"><label class="fld"><span>Раса</span><select data-bind="edit.raceId" data-rerender>${opts(R.RACES, e.raceId, '—')}<option value="custom" ${e.raceId === 'custom' ? 'selected' : ''}>Інша…</option></select></label>
     <label class="fld"><span>Клас</span><select data-bind="edit.classId" data-rerender>${opts(R.CLASSES, e.classId, '—')}</select></label></div>
     ${e.raceId === 'custom' ? `<label class="fld"><span>Назва раси</span><input data-bind="edit.raceName" value="${esc(e.raceName || '')}" maxlength="60"></label>` : ''}
-    <div class="grid2"><label class="fld"><span>Підклас</span><input data-bind="edit.subclass" value="${esc(e.subclass || '')}" maxlength="60"></label>
+    <div class="grid2"><label class="fld"><span>${esc((R.CLASS_DATA[e.classId] || {}).subclassLabel || 'Підклас')}</span><select data-bind="edit.subclassId"><option value="">—</option>
+      ${Object.entries((R.CLASS_DATA[e.classId] || { subclasses: {} }).subclasses).map(([id, sc]) => `<option value="${id}" ${e.subclassId === id ? 'selected' : ''}>${esc(sc.name)}</option>`).join('')}</select>
+      ${e.subclass && !e.subclassId ? `<small class="hint">Зараз: ${esc(e.subclass)}</small>` : ''}</label>
     <label class="fld"><span>Передісторія</span><select data-bind="edit.backgroundId">${opts(R.BACKGROUNDS, e.backgroundId, '—')}</select></label></div>
     <label class="fld"><span>Світогляд</span><select data-bind="edit.alignment"><option value="">—</option>${R.ALIGNMENTS.map((a) => `<option ${a === e.alignment ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
     <div class="grid3"><label class="fld"><span>Рівень</span>${numIn('edit.level', e.level, 'min="1" max="20"')}</label>
@@ -762,10 +867,10 @@ const MODALS = {
     <h3 class="mt2">Рятівні кидки від смерті</h3>
     <div class="ln"><span class="grow">✅ Успіхи: ${s.deathSaves.s}/3</span><div class="stepper"><button data-act="dsStep" data-k="s" data-d="-1">−</button><button data-act="dsStep" data-k="s" data-d="1">+</button></div></div>
     <div class="ln"><span class="grow">❌ Провали: ${s.deathSaves.f}/3</span><div class="stepper"><button data-act="dsStep" data-k="f" data-d="-1">−</button><button data-act="dsStep" data-k="f" data-d="1">+</button></div></div>
-    <div class="ln"><span class="grow">🎲 Кості хітів: ${s.level - s.hitDiceUsed}/${s.level}</span><div class="stepper"><button data-act="hdStep" data-d="1" title="Витратити">−</button><button data-act="hdStep" data-d="-1" title="Відновити">+</button></div></div>
+    <div class="ln"><span class="grow">🎲 Кості хітів: ${s.level - s.hitDiceUsed}/${s.level}</span>${M ? '<div class="stepper"><button data-act="hdStep" data-d="1" title="Витратити">−</button><button data-act="hdStep" data-d="-1" title="Відновити">+</button></div>' : '<small class="hint">витрачаються на короткому відпочинку</small>'}</div>
     <div class="ln"><span class="grow">⭐ Натхнення: ${s.inspiration ? 'є' : 'немає'}</span>${M ? `<button class="btn sm" data-act="inspiration">${s.inspiration ? 'Забрати' : 'Дати'}</button>` : s.inspiration ? '<button class="btn sm" data-act="inspiration">Використати</button>' : ''}</div>
-    <button class="btn block mt" data-act="longRest">🌙 Довгий відпочинок</button>
-    ${M ? '' : '<p class="hint mt">Зміни хітів бачить майстер у журналі.</p>'}`;
+    ${M ? `<div class="btns"><button class="btn" data-act="rest" data-kind="short">☕ Короткий відпочинок</button><button class="btn" data-act="rest" data-kind="long">🌙 Довгий відпочинок</button></div>`
+      : '<p class="hint mt">Зміни хітів бачить майстер у журналі. Відпочинок оголошує майстер.</p>'}`;
   },
 
   xp: (m) => {
@@ -801,19 +906,28 @@ const MODALS = {
       ['КЗ', d.ac != null && d.ac !== '' ? (d.type === 'shield' ? `+${d.ac}` : `${d.ac}${d.dexMax == null ? ' + СПР' : d.dexMax ? ` + СПР (макс. ${d.dexMax})` : ''}`) : ''],
       ['Бонус до КЗ', d.acBonus ? `+${d.acBonus}` : ''], ['Потрібна Сила', d.strReq || ''], ['Непомітність', d.stealthDis ? 'перешкода' : ''], ['Налаштування', esc(d.attune)], ['Заряди', esc(d.charges)]]
       .filter(([, v]) => v !== '' && v != null);
-    if (d.type === 'weapon' && d.damage) { const w = R.weaponAttack(ch.sheet, d); rows.push(['Атака', `${fm(w.hit)} · ${esc(w.dmg)}`]); }
+    const wd = withBase(d);
+    if (wd.type === 'weapon' || (['staff', 'rod'].includes(wd.type) && wd.damage)) { const w = R.weaponAttack(ch.sheet, wd); rows.push(['Атака', `${fm(w.hit)} · ${wd.damage ? esc(w.dmg) : 'шкода не вказана'}`]); }
+    const cons = R.isConsumable(d);
+    rows.push(['Витратний', cons ? 'так' : 'ні']);
     const equipable = ['weapon', 'armor', 'shield', 'ring', 'wondrous', 'staff', 'rod', 'wand'].includes(d.type);
     let h = `<div class="rc-${esc(d.rarity)}">${hdr(`<span class="rname">${ITEM_ICON[d.type] || ''} ${esc(d.name)}</span>`, `Кількість: ${it.qty}${it.equipped ? ' · екіпіровано' : ''}${it.attuned ? ' · налаштовано' : ''}`)}
       <dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
       ${d.desc ? `<div class="textblock mt">${esc(d.desc)}</div>` : ''}</div>`;
     if (!M) {
-      h += `<div class="card"><h3>Використати</h3><div class="row mt"><div class="stepper grow"><button data-act="qtyStep" data-d="-1">−</button>
-        <input type="number" data-bind="modal.qty" value="${m.qty}" min="1" max="${it.qty}"><button data-act="qtyStep" data-d="1" data-max="${it.qty}">+</button></div>
-        <button class="btn primary" data-act="useItem">Використати</button></div><small class="hint">Кількість зменшиться, майстер отримає сповіщення.</small></div>`;
+      if (cons) {
+        h += `<div class="card"><h3>Використати</h3><div class="row mt"><div class="stepper grow"><button data-act="qtyStep" data-d="-1">−</button>
+          <input type="number" data-bind="modal.qty" value="${m.qty}" min="1" max="${it.qty}"><button data-act="qtyStep" data-d="1" data-max="${it.qty}">+</button></div>
+          <button class="btn primary" data-act="useItem">Використати</button></div><small class="hint">Кількість зменшиться, майстер отримає сповіщення.</small></div>`;
+      } else {
+        h += '<p class="hint mt">Це не витратний предмет: його кількість змінює лише майстер.</p>';
+      }
+      const attProblem = d.attune && !it.attuned ? R.attuneProblem(ch.sheet, d.attune) : null;
       h += `<div class="btns">${equipable ? `<button class="btn" data-act="equip">${it.equipped ? 'Зняти' : 'Екіпірувати'}</button>` : ''}
-        ${d.attune ? `<button class="btn" data-act="attune">${it.attuned ? 'Скасувати налаштування' : 'Налаштуватися'}</button>` : ''}
+        ${d.attune ? `<button class="btn ${attProblem ? 'disabled' : ''}" data-act="attune">${it.attuned ? 'Скасувати налаштування' : 'Налаштуватися'}</button>` : ''}
         ${S.room.mates.length ? '<button class="btn" data-act="giveItemModal">🤝 Передати</button>' : ''}
-        <button class="btn danger" data-act="dropItem">🗑 Викинути</button></div>`;
+        ${cons ? '<button class="btn danger" data-act="dropItem">🗑 Викинути</button>' : ''}</div>
+        ${attProblem ? `<p class="hint">${esc(attProblem)}</p>` : ''}`;
     } else {
       h += `<div class="card"><h3>Кількість</h3><div class="row mt"><div class="stepper grow"><button data-act="qtyStep" data-d="-1" data-min="0">−</button>
         <input type="number" data-bind="modal.qty" value="${m.qty}" min="0"><button data-act="qtyStep" data-d="1">+</button></div>
@@ -854,6 +968,9 @@ const MODALS = {
     <div class="grid3"><label class="fld"><span>Ціна</span><input data-bind="modal.form.cost" value="${esc(f.cost || '')}" placeholder="10 ЗМ"></label>
     <label class="fld"><span>Вага, фнт</span><input type="number" step="0.25" data-bind="modal.form.weight" value="${esc(f.weight ?? '')}"></label>
     <label class="fld"><span>Магічний +</span><input type="number" data-bind="modal.form.bonus" value="${esc(f.bonus || '')}" placeholder="0"></label></div>
+    <label class="row fld"><input type="checkbox" data-bind="modal.form.consumable" ${R.isConsumable(f) ? 'checked' : ''}><span>Витратний предмет (гравець може використовувати й зменшувати кількість)</span></label>
+    ${f.type === 'weapon' ? `<label class="fld"><span>Базова зброя (заповнить шкоду й властивості)</span><select data-onchange="applyBaseWeapon"><option value="">—</option>
+      ${BASE_WEAPONS.map((w) => `<option value="${w.id}" ${f.baseName === w.name ? 'selected' : ''}>${esc(w.name)} — ${esc(w.damage || '—')} ${esc(w.dmgType || '')}</option>`).join('')}</select></label>` : ''}
     ${showWeapon ? `<div class="grid2"><label class="fld"><span>Шкода</span><input data-bind="modal.form.damage" value="${esc(f.damage || '')}" placeholder="1к8"></label>
       <label class="fld"><span>Тип шкоди</span><select data-bind="modal.form.dmgType"><option value="">—</option>${R.DAMAGE_TYPES.map((t) => `<option ${f.dmgType === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
       <label class="fld"><span>Додаткова шкода</span><input data-bind="modal.form.damage2" value="${esc(f.damage2 || '')}" placeholder="+2к6 вогнем"></label>
@@ -912,7 +1029,8 @@ const MODALS = {
     const ch = currentChar();
     if (!ch) return null;
     return `${hdr(esc(ch.sheet.name), `Гравець: ${esc(charOwnerName(ch))}`)}
-    <button class="btn block mt" data-act="longRest">🌙 Довгий відпочинок (повні ХП, комірки, ½ костей хітів)</button>
+    <button class="btn block mt" data-act="rest" data-kind="short">☕ Короткий відпочинок (ресурси ☕, кості хітів)</button>
+    <button class="btn block mt" data-act="rest" data-kind="long">🌙 Довгий відпочинок (повні ХП, комірки, ресурси, ½ костей хітів)</button>
     <button class="btn danger block mt" data-act="markDead">☠ Персонаж загинув</button>
     <button class="btn danger block mt" data-act="kick" data-uid="${ch.userId}" data-name="${esc(charOwnerName(ch))}">🚪 Видалити гравця з кімнати</button>`;
   },
@@ -923,50 +1041,97 @@ const MODALS = {
     const s = ch.sheet;
     const nl = s.level + 1;
     const cls = R.CLASSES[s.classId] || { hd: 8, name: '' };
-    const race = R.RACES[s.raceId] || {};
+    const cd = R.CLASS_DATA[s.classId];
+    const needSub = R.subclassNeeded(s, nl);
+    // попередній перегляд: лист із вмінням нового рівня й обраним підкласом
+    const tmp = clone(s);
+    const before = Array.isArray(s.features) ? s.features.length : 0;
+    R.gainLevelFeatures(tmp, nl, { subclassId: m.subclassId });
+    const subOk = !R.subclassNeeded(tmp, nl);
+    const newFeats = (tmp.features || []).slice(before).filter((x) => x.lvl === nl && x.src !== 'choice');
+    const backfill = !Array.isArray(s.features) ? (tmp.features || []).filter((x) => x.lvl < nl).length : 0;
+    const specs = subOk ? R.pendingChoices(tmp, nl) : [];
+    const optSheet = clone(tmp);
+    if ((m.choices.pactBoon || []).length) optSheet.choices = { ...optSheet.choices, pactBoon: [...(optSheet.choices.pactBoon || []), ...m.choices.pactBoon] };
     const asiLvl = R.isAsiLevel(s.classId, nl);
     const expN = R.expertiseAt(s.classId, nl);
     const asiSum = Object.values(m.asi).reduce((t, v) => t + v, 0);
-    const newCon = s.abilities.con + (m.asi.con || 0);
-    const conMod = R.mod(newCon);
-    const avg = Math.max(1, R.hdAverage(cls.hd) + conMod + (race.hpPerLevel || 0));
-    const oldSlots = R.spellSlots(s.classId, s.level);
-    const newSlots = R.spellSlots(s.classId, nl);
+    const feat = asiLvl && m.asiMode === 'feat' ? R.FEATS.find((x) => x.id === m.feat.id) : null;
+    const conGain = (m.asiMode === 'asi' ? (m.asi.con || 0) : feat && feat.asi && (feat.asi.length === 1 ? feat.asi[0] : m.feat.ability) === 'con' ? 1 : 0);
+    const conMod = R.mod(s.abilities.con + conGain);
+    const hpBonus = R.hpPerLevelBonus(tmp) + (feat && feat.id === 'tough' ? 2 : 0);
+    const avg = Math.max(1, R.hdAverage(cls.hd) + conMod + hpBonus);
+    const oldSlots = R.spellSlots(s.classId, s.level, s.subclassId);
+    const newSlots = R.spellSlots(s.classId, nl, tmp.subclassId);
     const pOld = R.profBonus(s.level);
     const pNew = R.profBonus(nl);
-    let h = `${hdr(`⬆️ ${nl} рівень`, `${esc(s.name)} · ${esc(cls.name)}`)}
-    <div class="card"><h3>Хіти</h3><p class="hint">Кість хітів к${cls.hd}${conMod ? `, модифікатор Статури ${fm(conMod)}` : ''}${race.hpPerLevel ? ', +1 (дварфійська стійкість)' : ''}</p>
+    let h = `${hdr(`⬆️ ${nl} рівень`, `${esc(s.name)} · ${esc(cls.name)}${tmp.subclass ? ` · ${esc(tmp.subclass)}` : ''}`)}
+    <div class="card"><h3>Хіти</h3><p class="hint">Кість хітів к${cls.hd}${conMod ? `, Статура ${fm(conMod)}` : ''}${hpBonus ? `, бонус +${hpBonus}` : ''}</p>
       <div class="grid2"><button class="btn ${m.hpMethod === 'avg' ? 'primary' : ''}" data-act="lvHp" data-m="avg">Середнє: +${avg}</button>
-      <button class="btn ${m.hpMethod === 'roll' ? 'primary' : ''}" data-act="lvHp" data-m="roll">🎲 Кинути к${cls.hd}${conMod ? fm(conMod) : ''}</button></div>
+      <button class="btn ${m.hpMethod === 'roll' ? 'primary' : ''}" data-act="lvHp" data-m="roll">🎲 Кинути к${cls.hd}${conMod + hpBonus ? fm(conMod + hpBonus) : ''}</button></div>
       <small class="hint">Кидок робить сервер під час підтвердження.</small></div>`;
+    if (needSub && cd) h += subclassPickerHtml(s.classId, m.subclassId, 'modal.subclassId');
+    if (newFeats.length) h += `<div class="lines"><h3>Нові вміння</h3>${featureListHtml(newFeats)}</div>`;
+    if (backfill) h += `<p class="hint">Також буде додано ${backfill} вмінь попередніх рівнів, яких ще немає в листі.</p>`;
+    if (specs.length) h += choicesHtml(specs, optSheet, nl, 'modal.choices', m.choices);
     if (asiLvl) {
       h += `<div class="card"><h3>Підвищення характеристик або риса</h3><div class="chips">
         <button class="chip ${m.asiMode === 'asi' ? 'on' : ''}" data-act="lvMode" data-m="asi">+2 до характеристик</button>
-        <button class="chip ${m.asiMode === 'feat' ? 'on' : ''}" data-act="lvMode" data-m="feat">Риса (feat)</button></div>`;
+        <button class="chip ${m.asiMode === 'feat' ? 'on' : ''}" data-act="lvMode" data-m="feat">Риса</button></div>`;
       if (m.asiMode === 'asi') {
         h += `<p class="hint">Розподіли 2 очки: +2 до однієї або +1 до двох. Максимум 20. Використано: ${asiSum}/2</p>
         ${R.ABILITIES.map((a) => { const v = m.asi[a] || 0; return `<div class="ln"><span class="grow">${R.ABILITY_NAMES[a]} <span class="hint">${s.abilities[a]}${v ? ` → ${s.abilities[a] + v}` : ''}</span></span>
           <div class="stepper"><button data-act="lvAsi" data-a="${a}" data-d="-1">−</button><input value="${v ? '+' + v : '0'}" readonly style="width:50px"><button data-act="lvAsi" data-a="${a}" data-d="1">+</button></div></div>`; }).join('')}`;
       } else {
-        h += `<label class="fld"><span>Назва та суть риси</span><input data-bind="modal.feat" value="${esc(m.feat)}" maxlength="300" placeholder="Напр. Пильний: +5 до ініціативи"></label>`;
+        const fo = R.featOptions(tmp);
+        h += `<label class="fld"><span>Риса</span><select data-bind="modal.feat.id" data-rerender="modal"><option value="">Обери рису…</option>
+          ${fo.map((x) => `<option value="${x.id}" ${m.feat.id === x.id ? 'selected' : ''} ${x.disabled ? 'disabled' : ''}>${esc(x.name)}${x.reason ? ` (${esc(x.reason)})` : ''}</option>`).join('')}</select></label>`;
+        if (feat) {
+          h += `<p class="textblock">${esc(feat.desc)}</p>`;
+          if (feat.asi && feat.asi.length > 1) {
+            h += `<p class="hint">Яку характеристику підвищити на +1?</p><div class="chips">${feat.asi.map((a) => `<button class="chip ${m.feat.ability === a ? 'on' : ''} ${s.abilities[a] >= 20 ? 'muted' : ''}" data-act="featAbility" data-a="${a}">${R.ABILITY_NAMES[a]} (${s.abilities[a]})</button>`).join('')}</div>`;
+          }
+          if (feat.effect === 'skilled') {
+            const sel = m.feat.skills || [];
+            h += `<p class="hint">Обери 3 навички (${sel.length}/3)</p>${R.SKILL_IDS.map((k) => {
+              const on = sel.includes(k); const dis = !!tmp.skills[k] || (!on && sel.length >= 3);
+              return `<div class="pick ${dis && !on ? 'disabled' : ''}" data-act="pickChoice" data-path="modal.feat" data-spec="skills" data-k="${k}" data-max="3"><input type="checkbox" ${on ? 'checked' : ''} style="pointer-events:none"><span>${R.SKILLS[k][0]}</span>${tmp.skills[k] ? '<span class="v hint">вже є</span>' : ''}</div>`;
+            }).join('')}`;
+          }
+        }
       }
       h += '</div>';
     }
     if (expN) {
-      const prof = R.SKILL_IDS.filter((k) => ch.sheet.skills[k] === 1);
+      const prof = R.SKILL_IDS.filter((k) => tmp.skills[k] === 1);
       h += `<div class="card"><h3>Експертиза</h3><p class="hint">Обери ${expN} навички (${m.expertise.length}/${expN})</p>${prof.map((k) => {
         const on = m.expertise.includes(k);
         return `<div class="pick ${!on && m.expertise.length >= expN ? 'disabled' : ''}" data-act="lvExp" data-k="${k}"><input type="checkbox" ${on ? 'checked' : ''} style="pointer-events:none"><span>${R.SKILLS[k][0]}</span></div>`;
       }).join('')}</div>`;
     }
     const slotChange = JSON.stringify(oldSlots) !== JSON.stringify(newSlots);
-    h += `<div class="card"><h3>Що зміниться</h3>
+    h += `<div class="card"><h3>Що ще зміниться</h3>
       ${pNew !== pOld ? `<div class="ln"><span>Бонус майстерності</span><span class="v">${fm(pOld)} → ${fm(pNew)}</span></div>` : ''}
       ${slotChange ? `<div class="ln"><span>Комірки заклять</span><span class="v">${oldSlots.join('/') || '—'} → ${newSlots.join('/')}</span></div>` : ''}
-      <div class="ln"><span>Кості хітів</span><span class="v">${nl}×к${cls.hd}</span></div>
-      <label class="fld"><span>Нові вміння класу (запишуться у «Вміння та риси»)</span><textarea data-bind="modal.notes" maxlength="2000" placeholder="Напр. Підклас: Школа втілення; нове вміння…">${esc(m.notes)}</textarea></label></div>
+      <div class="ln"><span>Кості хітів</span><span class="v">${nl}×к${cls.hd}</span></div></div>
     <button class="btn primary block mt" data-act="lvSubmit">✅ Підвищити рівень</button>`;
     return h;
+  },
+
+  featureForm: (m) => `${hdr('＋ Нове вміння')}
+    <label class="fld"><span>Назва</span><input data-bind="modal.name" value="${esc(m.name)}" maxlength="100"></label>
+    <label class="fld"><span>Рівень</span><input type="number" data-bind="modal.lvl" value="${esc(m.lvl)}" min="1" max="20"></label>
+    <label class="fld"><span>Опис</span><textarea data-bind="modal.desc" maxlength="800">${esc(m.desc)}</textarea></label>
+    <button class="btn primary block mt2" data-act="saveFeature">💾 Додати</button>`,
+
+  pool: (m) => {
+    const ch = currentChar();
+    const r = ch && R.sheetResources(ch.sheet).find((x) => x.id === m.id);
+    if (!r) return null;
+    const M = isMaster();
+    return `${hdr(esc(r.name), `Доступно ${r.max - r.used} з ${r.max}`)}
+    <label class="fld"><span>${M ? 'Використано (встановити)' : 'Скільки витратити'}</span><input type="number" data-bind="modal.amount" value="${esc(m.amount)}" min="0" max="${M ? r.max : r.max - r.used}"></label>
+    <button class="btn primary block mt2" data-act="poolSave">${M ? 'Зберегти' : 'Витратити'}</button>`;
   },
 };
 
@@ -1154,16 +1319,53 @@ const ACT = {
     const ch = currentChar();
     await reloadAfter(() => updateTrackers(ch, { inspiration: !ch.sheet.inspiration }));
   },
-  longRest: async () => {
+  rest: async ({ kind }) => {
     const ch = currentChar();
-    if (!(await confirmBox('Довгий відпочинок: повні хіти, усі комірки заклять, половина костей хітів.'))) return;
-    await reloadAfter(() => updateTrackers(ch, { longRest: true }), '🌙 Відпочинок завершено');
+    const txt = kind === 'long' ? 'Довгий відпочинок: повні хіти, комірки заклять і ресурси, половина костей хітів.' : 'Короткий відпочинок: відновлюються ресурси ☕ (і комірки чаклуна), гравець зможе витратити кості хітів.';
+    if (!(await confirmBox(`${ch.sheet.name}. ${txt}`))) return;
+    await reloadAfter(() => api('masterRest', { charId: ch.id, kind }), kind === 'long' ? '🌙 Довгий відпочинок' : '☕ Короткий відпочинок');
+  },
+  restAll: async ({ kind }) => {
+    const txt = kind === 'long' ? 'Довгий відпочинок для всіх персонажів кімнати?' : 'Короткий відпочинок для всіх? Гравці зможуть витратити кості хітів.';
+    if (!(await confirmBox(txt))) return;
+    const r = await reloadAfter(() => api('masterRest', { roomId: roomId(), kind }));
+    if (r) toast(`${kind === 'long' ? '🌙' : '☕'} Відпочинок для ${r.count} персонажів`);
+  },
+  spendHD: async () => {
+    const ch = currentChar();
+    const r = await reloadAfter(() => api('spendHitDie', { charId: ch.id }));
+    if (r) toast(`🎲 Випало ${r.roll}: +${r.heal} ХП. Костей хітів лишилось: ${r.left}`);
+  },
+  endRest: async () => { const ch = currentChar(); await reloadAfter(() => api('endShortRest', { charId: ch.id }), 'Відпочинок завершено'); },
+  res: async ({ id, j }) => {
+    const ch = currentChar();
+    const r = R.sheetResources(ch.sheet).find((x) => x.id === id);
+    const idx = Number(j);
+    const v = idx < r.used ? idx : idx + 1;
+    if (v < r.used && !isMaster()) { toast('Ресурси відновлюються на відпочинку, який оголошує майстер'); return; }
+    tapFx();
+    await reloadAfter(() => updateTrackers(ch, { resId: id, resUsed: v }));
+  },
+  poolModal: ({ id }) => {
+    const r = R.sheetResources(currentChar().sheet).find((x) => x.id === id);
+    openModal({ type: 'pool', id, amount: isMaster() ? r.used : '' });
+  },
+  poolSave: async () => {
+    const ch = currentChar();
+    const m = S.modal;
+    const r = R.sheetResources(ch.sheet).find((x) => x.id === m.id);
+    const n = Math.max(0, Math.trunc(num(m.amount)));
+    const v = isMaster() ? n : r.used + n;
+    if (!isMaster() && !n) { toast('Вкажи кількість', true); return; }
+    const ok = await reloadAfter(() => updateTrackers(ch, { resId: m.id, resUsed: v }));
+    if (ok) closeModal();
   },
   slot: async ({ l, j }) => {
     const ch = currentChar();
     const i = Number(l);
     const idx = Number(j);
     const usedNow = (ch.sheet.spell.slotsUsed || [])[i] || 0;
+    if (idx < usedNow && !isMaster()) { toast('Комірки відновлюються на відпочинку, який оголошує майстер'); return; }
     tapFx();
     await reloadAfter(() => updateTrackers(ch, { slotLevel: i, slotUsed: idx < usedNow ? idx : idx + 1 }));
   },
@@ -1369,9 +1571,20 @@ const ACT = {
   },
 
   // --- Підвищення рівня ---
-  openLevelUp: () => openModal({ type: 'levelUp', hpMethod: 'avg', asiMode: 'asi', asi: {}, feat: '', expertise: [], notes: '' }),
+  openLevelUp: () => openModal({ type: 'levelUp', hpMethod: 'avg', asiMode: 'asi', asi: {}, feat: { id: '', ability: '', skills: [] }, expertise: [], subclassId: '', choices: {} }),
+  pickSubclass: ({ path, k }) => { setPath(path, k); tapFx(); rerenderFor(path); },
+  pickChoice: ({ path, spec, k, max }) => {
+    const picks = getPath(path);
+    const arr = picks[spec] || [];
+    if (arr.includes(k)) picks[spec] = arr.filter((x) => x !== k);
+    else if (Number(max) === 1) picks[spec] = [k];
+    else if (arr.length < Number(max)) picks[spec] = [...arr, k];
+    tapFx();
+    rerenderFor(path);
+  },
+  featAbility: ({ a }) => { S.modal.feat.ability = a; renderModal(); },
   lvHp: ({ m }) => { S.modal.hpMethod = m; renderModal(); },
-  lvMode: ({ m }) => { S.modal.asiMode = m; S.modal.asi = {}; renderModal(); },
+  lvMode: ({ m }) => { S.modal.asiMode = m; S.modal.asi = {}; S.modal.feat = { id: '', ability: '', skills: [] }; renderModal(); },
   lvAsi: ({ a, d }) => {
     const m = S.modal;
     const s = currentChar().sheet;
@@ -1392,12 +1605,49 @@ const ACT = {
   lvSubmit: async () => {
     const ch = currentChar();
     const m = S.modal;
-    const r = await run(() => api('levelUp', { charId: ch.id, hpMethod: m.hpMethod, asi: m.asiMode === 'asi' ? m.asi : null, feat: m.asiMode === 'feat' ? m.feat : '', expertise: m.expertise, notes: m.notes }));
+    const r = await run(() => api('levelUp', {
+      charId: ch.id, hpMethod: m.hpMethod, asi: m.asiMode === 'asi' ? m.asi : null, feat: m.asiMode === 'feat' ? m.feat : null,
+      expertise: m.expertise, subclassId: m.subclassId, choices: m.choices,
+    }));
     if (r) {
       closeModal();
-      toast(`🎉 ${r.level} рівень! +${r.hpGain} ХП${m.hpMethod === 'roll' ? ` (на кубику ${r.die})` : ''}`);
+      toast(`🎉 ${r.level} рівень! +${r.hpGain} ХП${m.hpMethod === 'roll' ? ` (на кубику ${r.die})` : ''}${r.features && r.features.length ? `\nНові вміння: ${r.features.length}` : ''}`);
+      S.tab = 'spells';
       await loadRoom(true);
+      render();
     }
+  },
+
+  // --- Вміння (майстер) ---
+  featureForm: () => openModal({ type: 'featureForm', name: '', desc: '', lvl: currentChar().sheet.level }),
+  saveFeature: async () => {
+    const ch = currentChar();
+    const m = S.modal;
+    if (!String(m.name || '').trim()) { toast('Вкажи назву', true); return; }
+    const list = [...(ch.sheet.features || []), { lvl: Math.trunc(num(m.lvl, 1)), name: m.name, desc: m.desc, src: 'custom' }];
+    const ok = await reloadAfter(() => api('masterFeatures', { charId: ch.id, features: list }), 'Вміння додано');
+    if (ok) closeModal();
+  },
+  delFeature: async ({ i }) => {
+    const ch = currentChar();
+    const f = ch.sheet.features[Number(i)];
+    if (!(await confirmBox(`Прибрати вміння «${f.name}»?`))) return;
+    await reloadAfter(() => api('masterFeatures', { charId: ch.id, features: ch.sheet.features.filter((_, k) => k !== Number(i)) }), 'Прибрано');
+  },
+  fillFeatures: async () => {
+    const ch = currentChar();
+    const tmp = clone(ch.sheet);
+    delete tmp.features;
+    R.gainLevelFeatures(tmp, tmp.level, {});
+    const list = (tmp.features || []).filter((x) => x.src !== 'choice');
+    if (!(await confirmBox(`Додати ${list.length} вмінь раси й класу для 1–${tmp.level} рівнів? Вибори (підклас, бойовий стиль тощо) гравець зробить при наступному підвищенні рівня.`))) return;
+    await reloadAfter(() => api('masterFeatures', { charId: ch.id, features: list }), 'Вміння заповнено');
+  },
+  applyBaseWeapon: ({ value }) => {
+    const w = BASE_WEAPONS.find((x) => x.id === value);
+    if (!w) return;
+    Object.assign(S.modal.form, { damage: w.damage, dmgType: w.dmgType, props: w.props, ranged: w.ranged, weight: w.weight, baseName: w.name });
+    renderModal();
   },
 };
 
@@ -1450,6 +1700,7 @@ document.addEventListener('change', (e) => {
     if (!el.checked && i >= 0) arr.splice(i, 1);
     return;
   }
+  if (el.dataset.onchange && ACT[el.dataset.onchange]) { ACT[el.dataset.onchange]({ value: el.value }); return; }
   if (!el.dataset.bind) return;
   setPath(el.dataset.bind, elValue(el));
   if ('rerender' in el.dataset) { if (el.dataset.rerender === 'modal') renderModal(); else render(); }

@@ -344,6 +344,7 @@ export function sanitizeItem(d) {
   o.catalogId = str(d.catalogId, 60);
   for (const k of Object.keys(o)) if (o[k] === '' || o[k] === null || o[k] === false || (k === 'bonus' && o[k] === 0) || (k === 'acBonus' && o[k] === 0)) delete o[k];
   o.name = str(d.name, 80); o.rarity = o.rarity || 'common'; o.type = o.type || 'other';
+  if (d.consumable === true || d.consumable === false) o.consumable = d.consumable;
   return o;
 }
 
@@ -384,6 +385,11 @@ export function sanitizeSheetByMaster(input, old) {
   if ('classId' in i && R.CLASSES[i.classId]) s.classId = i.classId;
   if ('backgroundId' in i && R.BACKGROUNDS[i.backgroundId]) s.backgroundId = i.backgroundId;
   if ('subclass' in i) s.subclass = str(i.subclass, 60);
+  if ('subclassId' in i) {
+    const sc = R.subclassSpec(s.classId, i.subclassId);
+    if (sc) { s.subclassId = i.subclassId; s.subclass = sc.name; } else if (!i.subclassId) s.subclassId = '';
+  }
+  if ('passiveBonus' in i) s.passiveBonus = int(i.passiveBonus, -20, 20, 0);
   if ('alignment' in i) s.alignment = str(i.alignment, 40);
   if ('level' in i) s.level = int(i.level, 1, 20, s.level);
   if ('xp' in i) s.xp = int(i.xp, 0, 1e7, s.xp);
@@ -474,6 +480,16 @@ export function describeSheetDiff(a, b) {
     if (x !== y) out.push(`Використано комірок ${i + 1} кола: ${x} → ${y}`);
   }
   out.push(...spellsDiff(a.spell.spells, b.spell.spells));
+  cmp('Бонус пасивної уважності', a.passiveBonus || 0, b.passiveBonus || 0);
+  const resB = R.sheetResources(b);
+  for (const r of resB) {
+    const x = Math.min(r.max, Number((a.resUsed || {})[r.id] || 0)); const y = r.used;
+    if (x !== y) out.push(`${r.name}: використано ${x} → ${y} з ${r.max}`);
+  }
+  const fa = (a.features || []).map((x) => x.name); const fb = (b.features || []).map((x) => x.name);
+  const fAdd = fb.filter((n) => !fa.includes(n)); const fDel = fa.filter((n) => !fb.includes(n));
+  if (fAdd.length) out.push(`Нові вміння: ${fAdd.join(', ')}`);
+  if (fDel.length) out.push(`Прибрано вміння: ${fDel.join(', ')}`);
   if (JSON.stringify(sanitizeMoney(a.money)) !== JSON.stringify(sanitizeMoney(b.money))) out.push(`Гроші: ${moneyStr(a.money)} → ${moneyStr(b.money)}`);
   return out;
 }
@@ -684,13 +700,6 @@ const OPS = {
     const p = patch || {};
     const normSlots = () => { const u = (s.spell.slotsUsed || []).slice(0, 9); while (u.length < 9) u.push(0); s.spell.slotsUsed = u; return u; };
     const extra = [];
-    if (p.longRest) {
-      s.hp.cur = s.hp.max; s.hp.temp = 0;
-      s.hitDiceUsed = Math.max(0, (s.hitDiceUsed || 0) - Math.max(1, Math.floor(s.level / 2)));
-      s.deathSaves = { s: 0, f: 0 };
-      s.spell.slotsUsed = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-      extra.push('🌙 довгий відпочинок');
-    }
     if ('damage' in p) {
       const n = int(p.damage, 0, 99999, 0);
       const fromTemp = Math.min(s.hp.temp, n);
@@ -707,13 +716,26 @@ const OPS = {
     if ('hpTemp' in p) s.hp.temp = int(p.hpTemp, 0, 999, s.hp.temp);
     if ('deathS' in p) s.deathSaves.s = int(p.deathS, 0, 3, s.deathSaves.s);
     if ('deathF' in p) s.deathSaves.f = int(p.deathF, 0, 3, s.deathSaves.f);
-    if ('hitDiceUsed' in p) s.hitDiceUsed = int(p.hitDiceUsed, 0, s.level, s.hitDiceUsed);
+    if ('hitDiceUsed' in p) {
+      if (!isMaster) fail('Кості хітів витрачаються лише під час короткого відпочинку, який оголошує майстер');
+      s.hitDiceUsed = int(p.hitDiceUsed, 0, s.level, s.hitDiceUsed);
+    }
     if ('slotLevel' in p) {
       const i = int(p.slotLevel, 0, 8, 0);
       const max = R.sheetSlots(s);
-      normSlots()[i] = int(p.slotUsed, 0, max[i] || 0, 0);
+      const v = int(p.slotUsed, 0, max[i] || 0, 0);
+      if (!isMaster && v < (normSlots()[i] || 0)) fail('Комірки відновлюються лише на відпочинку (його оголошує майстер)');
+      normSlots()[i] = v;
+    }
+    if ('resId' in p) {
+      const r = R.sheetResources(s).find((x) => x.id === p.resId);
+      if (!r) fail('Невідомий ресурс');
+      const v = int(p.resUsed, 0, r.max, r.used);
+      if (!isMaster && v < r.used) fail('Ресурси відновлюються лише на відпочинку (його оголошує майстер)');
+      s.resUsed = { ...(s.resUsed || {}), [r.id]: v };
     }
     if (Array.isArray(p.slotsUsed)) {
+      if (!isMaster) fail('Комірки відновлюються лише на відпочинку');
       const max = R.sheetSlots(s);
       s.spell.slotsUsed = Array.from({ length: 9 }, (_, i) => int(p.slotsUsed[i], 0, max[i] || 0, 0));
     }
@@ -760,6 +782,7 @@ const OPS = {
 
   async useItem(c, { itemId, qty }) {
     const { item, ch, room } = await itemAccess(c, itemId, { owner: true });
+    if (!R.isConsumable(item.data)) fail('Це не витратний предмет — його кількість змінює лише майстер');
     const n = int(qty, 1, item.qty, 1);
     const left = await decItem(c, item, n);
     await addLog(c, room, `використав ${itemName(item)} ×${n} (залишилось ${left})`, charActor(c, ch));
@@ -769,6 +792,7 @@ const OPS = {
 
   async dropItem(c, { itemId }) {
     const { item, ch, room } = await itemAccess(c, itemId, { owner: true });
+    if (!R.isConsumable(item.data)) fail('Це не витратний предмет — прибрати його може лише майстер');
     await run(c.db, 'DELETE FROM items WHERE id = ?', item.id);
     await addLog(c, room, `викинув ${itemName(item)} ×${item.qty}`, charActor(c, ch));
     notify(c, room.master_id, `🗑 ${ch.sheet.name} викинув ${itemName(item)} ×${item.qty}.`);
@@ -779,6 +803,9 @@ const OPS = {
     const eq = equipped === undefined ? item.equipped : !!equipped;
     const at = attuned === undefined ? item.attuned : !!attuned;
     if (at && !item.attuned && !isMaster) {
+      if (!item.data.attune) fail('Цей предмет не потребує налаштування');
+      const problem = R.attuneProblem(ch.sheet, item.data.attune);
+      if (problem) fail(problem);
       const n = await first(c.db, 'SELECT COUNT(*) AS n FROM items WHERE char_id = ? AND attuned = 1', ch.id);
       if (n.n >= MAX_ATTUNED) fail(`Можна бути налаштованим максимум на ${MAX_ATTUNED} предмети`);
     }
@@ -833,36 +860,36 @@ const OPS = {
     notify(c, room.master_id, `💰 ${ch.sheet.name} передав ${moneyStr(d)} → ${to.sheet.name}.`);
   },
 
-  async levelUp(c, { charId, hpMethod, asi, feat, expertise, notes }) {
+  async levelUp(c, { charId, hpMethod, asi, feat, expertise, subclassId, choices }) {
     const { ch, room } = await charAccess(c, charId, { owner: true });
     const s = ch.sheet;
     if (!(s.targetLevel > s.level)) fail('Майстер ще не дозволив підвищення рівня');
     if (s.level >= 20) fail('Максимальний рівень — 20');
-    const newLevel = s.level + 1;
+    const oldLevel = s.level;
+    const newLevel = oldLevel + 1;
     const cls = R.CLASSES[s.classId] || { hd: 8 };
-    const race = R.RACES[s.raceId] || {};
     const parts = [];
     const oldCon = R.mod(s.abilities.con);
-    // Підвищення характеристик / риса
+    const featuresBefore = Array.isArray(s.features) ? s.features.length : 0;
+    // Нові вміння, підклас і вибори
+    const errs = R.gainLevelFeatures(s, newLevel, { subclassId, choices });
+    if (errs.length) fail(errs.join('\n'));
+    // Підвищення характеристик або риса
     if (R.isAsiLevel(s.classId, newLevel)) {
-      const featText = str(feat, 300);
       const inc = {};
       let sum = 0;
-      for (const a of R.ABILITIES) {
-        const v = int(asi && asi[a], 0, 2, 0);
-        if (v) { inc[a] = v; sum += v; }
-      }
-      if (sum && featText) fail('Обери або підвищення характеристик, або рису — не обидва');
-      if (sum) {
+      for (const a of R.ABILITIES) { const v = int(asi && asi[a], 0, 2, 0); if (v) { inc[a] = v; sum += v; } }
+      const wantFeat = feat && feat.id;
+      if (sum && wantFeat) fail('Обери або підвищення характеристик, або рису — не обидва');
+      if (wantFeat) {
+        const fe = R.applyFeat(s, feat, newLevel, oldLevel);
+        if (fe.length) fail(fe.join('\n'));
+        parts.push(s.features[s.features.length - 1].name);
+      } else if (sum) {
         if (sum !== 2) fail('Розподіли рівно 2 очки (+2 до однієї або +1 до двох характеристик)');
-        for (const a of Object.keys(inc)) {
-          if (s.abilities[a] + inc[a] > 20) fail(`${R.ABILITY_NAMES[a]} не може перевищувати 20`);
-        }
+        for (const a of Object.keys(inc)) if (s.abilities[a] + inc[a] > 20) fail(`${R.ABILITY_NAMES[a]} не може перевищувати 20`);
         for (const a of Object.keys(inc)) s.abilities[a] += inc[a];
         parts.push(Object.keys(inc).map((a) => `${R.ABILITY_SHORT[a]} +${inc[a]}`).join(', '));
-      } else if (featText) {
-        s.text.features = `${s.text.features ? s.text.features + '\n' : ''}[Рів. ${newLevel}] Риса: ${featText}`;
-        parts.push(`риса «${featText}»`);
       } else fail('На цьому рівні обери підвищення характеристик або рису');
     }
     // Експертиза
@@ -873,24 +900,48 @@ const OPS = {
       for (const k of e) s.skills[k] = 2;
       parts.push(`експертиза: ${e.map((k) => R.SKILLS[k][0]).join(', ')}`);
     }
-    // Хіти
+    parts.push(...R.levelEffects(s, newLevel));
+    // Хіти («Міцний»: +2 за попередні рівні додано в applyFeat, за новий — через hpPerLevelBonus)
     const conMod = R.mod(s.abilities.con);
-    let die;
-    if (hpMethod === 'roll') die = R.rollDie(cls.hd);
-    else die = R.hdAverage(cls.hd);
-    const gain = Math.max(1, die + conMod + (race.hpPerLevel || 0));
-    const retro = (conMod - oldCon) * s.level;
+    const die = hpMethod === 'roll' ? R.rollDie(cls.hd) : R.hdAverage(cls.hd);
+    const gain = Math.max(1, die + conMod + R.hpPerLevelBonus(s));
+    const retro = (conMod - oldCon) * oldLevel;
     s.hp.max += gain + retro;
     s.hp.cur = Math.min(s.hp.max, s.hp.cur + gain + Math.max(0, retro));
     parts.unshift(`+${gain + retro} ХП (${hpMethod === 'roll' ? `кидок к${cls.hd}: ${die}` : `середнє к${cls.hd}: ${die}`}${conMod ? `, СТА ${R.fmtMod(conMod)}` : ''}${retro ? `, перерахунок СТА ${R.fmtMod(retro)}` : ''})`);
-    const noteText = str(notes, 2000);
-    if (noteText) s.text.features = `${s.text.features ? s.text.features + '\n' : ''}[Рів. ${newLevel}] ${noteText}`;
     s.level = newLevel;
+    const newFeatures = s.features.slice(featuresBefore).filter((x) => x.lvl === newLevel).map((x) => x.name);
     await saveSheet(c, ch);
-    const msg = `підвищив рівень до ${newLevel}: ${parts.join('; ')}`;
+    const msg = `підвищив рівень до ${newLevel}: ${parts.join('; ')}${newFeatures.length ? `. Нові вміння: ${newFeatures.join(', ')}` : ''}`;
     await addLog(c, room, msg, charActor(c, ch));
     notify(c, room.master_id, `⬆️ ${s.name} ${msg}.`);
-    return { level: newLevel, hpGain: gain + retro, die };
+    return { level: newLevel, hpGain: gain + retro, die, features: newFeatures };
+  },
+
+  async spendHitDie(c, { charId }) {
+    const { ch, room } = await charAccess(c, charId, { owner: true });
+    const s = ch.sheet;
+    if (!R.shortRestActive(s, now())) fail('Кості хітів можна витрачати лише під час короткого відпочинку');
+    if ((s.hitDiceUsed || 0) >= s.level) fail('Не залишилось костей хітів');
+    if (s.hp.cur >= s.hp.max) fail('Хіти вже повні');
+    const hd = (R.CLASSES[s.classId] || { hd: 8 }).hd;
+    const conMod = R.mod(s.abilities.con);
+    const roll = R.rollDie(hd);
+    let heal = Math.max(0, roll + conMod);
+    if ((s.feats || []).includes('durable')) heal = Math.max(heal, 2 * conMod);
+    const before = s.hp.cur;
+    s.hp.cur = Math.min(s.hp.max, s.hp.cur + heal);
+    s.hitDiceUsed = (s.hitDiceUsed || 0) + 1;
+    await saveSheet(c, ch);
+    await addLog(c, room, `витратив кість хітів (к${hd}: ${roll}${conMod ? ` ${R.fmtMod(conMod)}` : ''}): ХП ${before} → ${s.hp.cur}`, charActor(c, ch));
+    return { roll, heal: s.hp.cur - before, left: s.level - s.hitDiceUsed };
+  },
+
+  async endShortRest(c, { charId }) {
+    const { ch } = await charAccess(c, charId, { owner: true, master: true });
+    if (!ch.sheet.shortRest) return;
+    ch.sheet.shortRest = null;
+    await saveSheet(c, ch);
   },
 
   // ----- Майстер -----
@@ -997,6 +1048,48 @@ const OPS = {
     notify(c, ch.userId, want
       ? `✨ Майстер повернув до життя ${ch.sheet.name}!`
       : `☠ Твій персонаж ${ch.sheet.name} загинув. Відкрий застосунок, щоб створити нового.`);
+  },
+
+  async masterRest(c, { roomId, charId, kind }) {
+    if (!['short', 'long'].includes(kind)) fail('Невідомий тип відпочинку');
+    let room;
+    let chars;
+    if (charId) {
+      const a = await charAccess(c, charId, { master: true });
+      room = a.room;
+      chars = [a.ch];
+    } else {
+      room = await requireMaster(c, roomId);
+      chars = (await all(c.db, `SELECT ch.* FROM characters ch JOIN members m ON m.room_id = ch.room_id AND m.user_id = ch.user_id
+        WHERE ch.room_id = ? AND ch.alive = 1`, room.id)).map(parseChar);
+    }
+    if (!chars.length) fail('Немає персонажів для відпочинку');
+    const t = now();
+    for (const ch of chars) {
+      const res = R.applyRest(ch.sheet, kind, t);
+      await saveSheet(c, ch);
+      const left = ch.sheet.level - (ch.sheet.hitDiceUsed || 0);
+      notify(c, ch.userId, kind === 'long'
+        ? `🌙 Довгий відпочинок: ${ch.sheet.name} — хіти, комірки заклять і ресурси відновлено.`
+        : `☕ Короткий відпочинок! ${res.length ? `Відновлено: ${res.join(', ')}. ` : ''}Можеш витратити кості хітів у застосунку (доступно ${left}).`);
+    }
+    await addLog(c, room, `${kind === 'long' ? '🌙 довгий' : '☕ короткий'} відпочинок: ${chars.map((x) => x.sheet.name).join(', ')}`);
+    return { count: chars.length };
+  },
+
+  async masterFeatures(c, { charId, features }) {
+    const { ch, room } = await charAccess(c, charId, { master: true });
+    if (!Array.isArray(features) || features.length > 300) fail('Невірний список вмінь');
+    const old = JSON.parse(JSON.stringify(ch.sheet));
+    ch.sheet.features = features.map((x) => ({
+      lvl: int(x.lvl, 1, 20, 1), name: str(x.name, 100) || fail('У вміння має бути назва'), desc: str(x.desc, 800),
+      src: ['race', 'class', 'subclass', 'choice', 'feat', 'custom'].includes(x.src) ? x.src : 'custom',
+    }));
+    const diff = describeSheetDiff(old, ch.sheet);
+    if (!diff.length) return;
+    await saveSheet(c, ch);
+    await addLog(c, room, `${ch.sheet.name}: ${diff.join('; ')}`);
+    notify(c, ch.userId, `🎲 Майстер змінив вміння ${ch.sheet.name}: ${diff.join('; ')}`);
   },
 
   async logList(c, { roomId, all: wantAll }) {
