@@ -1,0 +1,18 @@
+# Cloudflare Worker — сервер DnD Companion (API, вебхук бота, база D1).
+# Секрет BOT_TOKEN задається в панелі Cloudflare (Settings → Variables and Secrets), не тут.
+name = "dnd-companion"
+main = "worker/index.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+[vars]
+APP_URL = "https://dimazako.github.io/DnDCompanion/"
+BOT_USERNAME = "DnD_Dazai_bot"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dnd-companion"
+database_id = "REPLACE_WITH_D1_ID"
+
+[observability]
+enabled = true
