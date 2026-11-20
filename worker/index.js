@@ -14,7 +14,10 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_items_char ON items(char_id)`,
   `CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, session INTEGER NOT NULL, ts INTEGER NOT NULL, actor_id INTEGER, actor TEXT, text TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_logs_room ON logs(room_id, session)`,
+  `CREATE TABLE IF NOT EXISTS master_items (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL, data TEXT NOT NULL, created_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS idx_master_items_owner ON master_items(owner_id)`,
 ];
+const MAX_MY_ITEMS = 500;
 
 const MAX_PLAYERS = 10;
 const MAX_ATTUNED = 3;
@@ -55,10 +58,15 @@ export default {
 let schemaReady = null;
 function ensureSchema(db) {
   if (!schemaReady) {
-    schemaReady = db.batch(SCHEMA.map((s) => db.prepare(s))).catch((e) => { schemaReady = null; throw e; });
+    schemaReady = db.batch(SCHEMA.map((s) => db.prepare(s)))
+      // версія кімнати для миттєвого оновлення (колонка могла вже існувати)
+      .then(() => db.prepare('ALTER TABLE rooms ADD COLUMN version INTEGER NOT NULL DEFAULT 0').run().catch(() => {}))
+      .catch((e) => { schemaReady = null; throw e; });
   }
   return schemaReady;
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const bumpRoom = (c, roomId) => run(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', roomId);
 const q = (db, sql, ...args) => db.prepare(sql).bind(...args);
 const first = (db, sql, ...args) => q(db, sql, ...args).first();
 const all = async (db, sql, ...args) => (await q(db, sql, ...args).all()).results || [];
@@ -303,8 +311,10 @@ async function saveSheet(c, ch) {
 
 async function addLog(c, room, text, actorOverride) {
   const actor = actorOverride || (room.master_id === c.user.id ? `Майстер ${c.user.name}` : c.user.name);
-  await run(c.db, 'INSERT INTO logs (room_id, session, ts, actor_id, actor, text) VALUES (?, ?, ?, ?, ?, ?)',
-    room.id, room.session, now(), c.user.id, actor, text);
+  await c.db.batch([
+    q(c.db, 'INSERT INTO logs (room_id, session, ts, actor_id, actor, text) VALUES (?, ?, ?, ?, ?, ?)', room.id, room.session, now(), c.user.id, actor, text),
+    q(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', room.id),
+  ]);
 }
 const charActor = (c, ch) => `${ch.sheet.name} (${c.user.name})`;
 const itemName = (it) => `«${it.data.name}»`;
@@ -596,7 +606,7 @@ const OPS = {
 
   async deleteRoom(c, { roomId }) {
     const room = await requireMaster(c, roomId);
-    await run(c.db, 'UPDATE rooms SET deleted = 1 WHERE id = ?', room.id);
+    await run(c.db, 'UPDATE rooms SET deleted = 1, version = version + 1 WHERE id = ?', room.id);
     const members = await all(c.db, 'SELECT user_id FROM members WHERE room_id = ?', room.id);
     for (const m of members) notify(c, m.user_id, `🚪 Майстер закрив кімнату «${room.name}».`);
   },
@@ -636,7 +646,7 @@ const OPS = {
   async room(c, { roomId }) {
     const room = await getRoom(c, roomId);
     const master = await first(c.db, 'SELECT first_name FROM users WHERE id = ?', room.master_id);
-    const base = { id: room.id, name: room.name, session: room.session, masterName: master ? master.first_name : '' };
+    const base = { id: room.id, name: room.name, session: room.session, version: room.version || 0, masterName: master ? master.first_name : '' };
     if (room.master_id === c.user.id) {
       const members = await all(c.db, `SELECT m.user_id, m.joined_at, u.first_name, u.username FROM members m
         LEFT JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`, room.id);
@@ -661,6 +671,45 @@ const OPS = {
     const fallen = (await all(c.db, 'SELECT id, sheet FROM characters WHERE room_id = ? AND user_id = ? AND alive = 0 ORDER BY id DESC', room.id, c.user.id))
       .map((r) => { const s = JSON.parse(r.sheet); return { id: r.id, name: s.name, level: s.level, classId: s.classId }; });
     return { role: 'player', room: base, character, mates, fallen, lastRoll: mem.last_roll ? JSON.parse(mem.last_roll) : null };
+  },
+
+  // Довге опитування: відповідає, щойно версія кімнати зміниться (або за ~20 с)
+  async watch(c, { roomId, since }) {
+    const id = str(roomId, 12).toUpperCase();
+    const room = await first(c.db, 'SELECT master_id, deleted, version FROM rooms WHERE id = ?', id);
+    if (!room || room.deleted) return { gone: true };
+    if (room.master_id !== c.user.id && !(await isMember(c, id))) return { gone: true };
+    const deadline = Date.now() + Number(c.env.WATCH_TIMEOUT_MS || 20000);
+    const want = Number(since);
+    let v = room.version || 0;
+    while (v === want && Date.now() < deadline) {
+      await sleep(1000);
+      const r = await first(c.db, 'SELECT deleted, version FROM rooms WHERE id = ?', id);
+      if (!r || r.deleted) return { gone: true };
+      v = r.version || 0;
+    }
+    return { version: v };
+  },
+
+  // ----- Каталог майстра (спільний для всіх його кімнат) -----
+  async myItems(c) {
+    const rows = await all(c.db, 'SELECT id, data FROM master_items WHERE owner_id = ? ORDER BY id DESC', c.user.id);
+    return { items: rows.map((r) => ({ id: r.id, data: JSON.parse(r.data) })) };
+  },
+  async saveMyItem(c, { id, item }) {
+    const data = sanitizeItem(item);
+    if (id) {
+      const r = await run(c.db, 'UPDATE master_items SET data = ? WHERE id = ? AND owner_id = ?', JSON.stringify(data), int(id, 0, 1e12, 0), c.user.id);
+      if (!(r.meta && r.meta.changes)) fail('Предмет не знайдено у твоєму каталозі');
+      return { id: Number(id) };
+    }
+    const n = await first(c.db, 'SELECT COUNT(*) AS n FROM master_items WHERE owner_id = ?', c.user.id);
+    if (n.n >= MAX_MY_ITEMS) fail(`У каталозі вже ${MAX_MY_ITEMS} предметів — видали непотрібні`);
+    const r = await run(c.db, 'INSERT INTO master_items (owner_id, data, created_at) VALUES (?, ?, ?)', c.user.id, JSON.stringify(data), now());
+    return { id: r.meta && r.meta.last_row_id };
+  },
+  async deleteMyItem(c, { id }) {
+    await run(c.db, 'DELETE FROM master_items WHERE id = ? AND owner_id = ?', int(id, 0, 1e12, 0), c.user.id);
   },
 
   async rollAbilities(c, { roomId }) {
@@ -944,6 +993,7 @@ const OPS = {
     if (!ch.sheet.shortRest) return;
     ch.sheet.shortRest = null;
     await saveSheet(c, ch);
+    await bumpRoom(c, ch.roomId);
   },
 
   // ----- Майстер -----

@@ -13,7 +13,7 @@ const $busy = document.getElementById('busy');
 
 const S = {
   me: null, nav: [], room: null, modal: null, tab: 'sheet',
-  wiz: null, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, log: null, logAll: false, bootError: null,
+  wiz: null, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, log: null, logAll: false, bootError: null,
 };
 
 // ================= Допоміжні =================
@@ -57,7 +57,7 @@ function confirmBox(msg) {
 let busyN = 0;
 function busy(on) { busyN += on ? 1 : -1; $busy.hidden = busyN <= 0; }
 
-async function api(op, params = {}) {
+async function api(op, params = {}, opts = {}) {
   if (!API || API.includes('REPLACE')) throw new Error('Сервер ще не налаштований (config.js).');
   let r;
   try {
@@ -65,8 +65,10 @@ async function api(op, params = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Init-Data': (tg && tg.initData) || '' },
       body: JSON.stringify({ op, ...params }),
+      signal: opts.signal,
     });
   } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
     throw new Error('Немає зв’язку із сервером. Перевір інтернет.');
   }
   const data = await r.json().catch(() => ({ error: `Помилка сервера (${r.status})` }));
@@ -123,9 +125,10 @@ async function loadRoom(silent) {
   if (!roomId) return;
   try {
     const d = await api('room', { roomId });
+    if (S.roomId !== roomId) return;
     const changed = JSON.stringify(d) !== JSON.stringify(S.room);
     S.room = d;
-    if (!silent || changed) { render(); if (S.modal) renderModal(); }
+    if (!silent || changed) refreshScreen();
   } catch (e) {
     if (!silent) toast(e.message, true);
     if (/не знайдено|видалено|не в цій кімнаті/i.test(e.message)) {
@@ -135,6 +138,58 @@ async function loadRoom(silent) {
       loadMe(true);
     }
   }
+}
+
+// Перемальовує екран і відкрите вікно; якщо людина зараз щось вводить — відкладає до виходу з поля
+function isTyping() {
+  const a = document.activeElement;
+  return !!(a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) && a.type !== 'checkbox' && a.type !== 'radio');
+}
+function refreshScreen() {
+  if (isTyping()) { S.pendingRender = true; return; }
+  S.pendingRender = false;
+  const y = window.scrollY;
+  render();
+  if (S.modal) renderModal();
+  window.scrollTo(0, y);
+}
+document.addEventListener('focusout', () => {
+  if (!S.pendingRender) return;
+  setTimeout(() => { if (S.pendingRender && !isTyping()) refreshScreen(); }, 400);
+});
+
+// Миттєве оновлення: сервер тримає запит, доки в кімнаті щось не зміниться
+let watchGen = 0;
+let watchRoom = null;
+let watchAbort = null;
+function stopWatch() { watchGen++; watchRoom = null; if (watchAbort) { watchAbort.abort(); watchAbort = null; } }
+function syncWatch() {
+  const inRoom = S.roomId && S.nav.some((v) => v.view === 'room');
+  if (!inRoom) { if (watchRoom) stopWatch(); return; }
+  if (watchRoom === S.roomId) return;
+  stopWatch();
+  const gen = watchGen;
+  const roomId = S.roomId;
+  watchRoom = roomId;
+  (async () => {
+    let fails = 0;
+    while (gen === watchGen) {
+      if (document.hidden) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+      const since = S.room && S.room.room.id === roomId ? (S.room.room.version || 0) : -1;
+      watchAbort = new AbortController();
+      try {
+        const r = await api('watch', { roomId, since }, { signal: watchAbort.signal });
+        fails = 0;
+        if (gen !== watchGen) return;
+        if (r.gone || r.version !== since) await loadRoom(true);
+        if (r.gone) return;
+      } catch (e) {
+        if (gen !== watchGen) return;
+        fails++;
+        await new Promise((r) => setTimeout(r, Math.min(15000, 1500 * fails)));
+      }
+    }
+  })();
 }
 
 function openRoom(roomId) {
@@ -175,6 +230,7 @@ function render() {
   const fn = VIEWS[v.view] || VIEWS.loading;
   $app.innerHTML = fn(v);
   syncBackButton();
+  syncWatch();
 }
 function renderModal() {
   if (!S.modal) { $modal.innerHTML = ''; return; }
@@ -182,10 +238,14 @@ function renderModal() {
   const html = fn ? fn(S.modal) : '';
   if (html === null) { S.modal = null; $modal.innerHTML = ''; syncBackButton(); return; }
   const prev = $modal.querySelector('.sheet');
-  const scroll = prev ? prev.scrollTop : 0;
-  $modal.innerHTML = `<div class="overlay"><div class="sheet"><div class="grab"></div>${html}</div></div>`;
-  const sh = $modal.querySelector('.sheet');
-  if (sh) sh.scrollTop = scroll;
+  if (prev) {
+    // вікно вже відкрите — оновлюємо лише вміст, без повторної анімації
+    const scroll = prev.scrollTop;
+    prev.innerHTML = `<div class="grab"></div>${html}`;
+    prev.scrollTop = scroll;
+  } else {
+    $modal.innerHTML = `<div class="overlay"><div class="sheet"><div class="grab"></div>${html}</div></div>`;
+  }
 }
 const loadingHtml = () => '<div class="center-screen"><div class="spinner"></div></div>';
 const empty = (e, t) => `<div class="empty"><span class="e">${e}</span>${t}</div>`;
@@ -220,6 +280,8 @@ const VIEWS = {
       <p class="hint">Кімната — це твоя гра або кампанія. До ${S.me.maxPlayers} гравців.</p>
       <div class="row mt"><input id="newRoomName" class="grow" maxlength="60" placeholder="Назва, напр. «Копальні Фанделвера»">
       <button class="btn primary" data-act="createRoom">Створити</button></div></div>
+    <div class="card tap list-item" data-act="openMyCatalog"><div class="ava">📦</div><div class="meta"><b>Каталог предметів</b>
+      <small>Предмети D&D 5e і твої власні — спільні для всіх твоїх кімнат</small></div><span class="chev">›</span></div>
     <h3 class="sec">Мої кімнати</h3>
     ${rooms.length ? rooms.map((r) => `<div class="card tap list-item" data-act="openRoom" data-id="${esc(r.id)}">
       <div class="ava">🏰</div><div class="meta"><b>${esc(r.name)}</b><small>Код ${esc(r.id)} · гравців ${r.players}/${S.me.maxPlayers} · сесія ${r.session}</small></div><span class="chev">›</span></div>`).join('')
@@ -753,11 +815,15 @@ function wizStep4() {
 }
 
 // ---------- Каталог ----------
-const CAT_GROUPS = [['all', 'Усі'], ['weapon', 'Зброя'], ['armor', 'Обладунки'], ['gear', 'Спорядження'], ['potion', 'Зілля'], ['magic', 'Магічні'], ['tool', 'Інструменти'], ['treasure', 'Скарби']];
+const CAT_GROUPS = [['all', 'Усі'], ['mine', 'Мої предмети'], ['weapon', 'Зброя'], ['armor', 'Обладунки'], ['gear', 'Спорядження'], ['potion', 'Зілля'], ['magic', 'Магічні'], ['tool', 'Інструменти'], ['treasure', 'Скарби']];
+function myCatalog() {
+  return (S.myItems || []).map((x) => ({ ...x.data, catalogId: `my_${x.id}`, myId: x.id, group: 'Мої предмети', srcId: x.data.catalogId }));
+}
 function catalogFiltered() {
   const { q, group, rarity } = S.cat;
   const ql = q.trim().toLowerCase();
-  return CATALOG.filter((it) => {
+  return [...myCatalog(), ...CATALOG].filter((it) => {
+    if (group === 'mine' && !it.myId) return false;
     if (rarity !== 'all' && it.rarity !== rarity) return false;
     if (group === 'weapon' && it.type !== 'weapon') return false;
     if (group === 'armor' && !['armor', 'shield'].includes(it.type)) return false;
@@ -772,18 +838,21 @@ function catalogFiltered() {
 function catalogListHtml() {
   const list = catalogFiltered();
   if (!list.length) return empty('🔍', 'Нічого не знайдено');
-  return list.map((it) => `<div class="item rc-${it.rarity}" data-act="catPick" data-id="${esc(it.catalogId)}"><span class="ic">${ITEM_ICON[it.type] || '📦'}</span>
-    <div class="meta"><div class="nm">${esc(it.name)}</div><small>${esc([R.RARITIES[it.rarity].name, itemSub(it), it.cost, it.attune && 'налаштування'].filter(Boolean).join(' · '))}</small></div></div>`).join('');
+  return list.map((it) => `<div class="item rc-${esc(it.rarity)}" data-act="catPick" data-id="${esc(it.catalogId)}"><span class="ic">${ITEM_ICON[it.type] || '📦'}</span>
+    <div class="meta"><div class="nm">${esc(it.name)}${it.myId ? ' <span class="badge gold">мій</span>' : ''}</div><small>${esc([R.RARITIES[it.rarity] ? R.RARITIES[it.rarity].name : '', itemSub(it), it.cost, it.attune && 'налаштування'].filter(Boolean).join(' · '))}</small></div></div>`).join('');
 }
 function catalogHtml() {
-  const ch = currentChar();
-  return `<div class="top"><h2>🎁 Каталог D&D 5e</h2></div>
-  <p class="hint" style="margin:4px">Видати предмет: <b>${ch ? esc(ch.sheet.name) : ''}</b></p>
+  const manage = !cur().charId;
+  const ch = manage ? null : currentChar();
+  return `<div class="top"><h2>${manage ? '📦 Каталог предметів' : '🎁 Видати предмет'}</h2></div>
+  <p class="hint" style="margin:4px">${manage ? 'D&D 5e (SRD) і твої власні предмети. Власні доступні у всіх твоїх кімнатах. Натисни на предмет D&D, щоб зберегти його змінену копію.'
+    : `Персонаж: <b>${ch ? esc(ch.sheet.name) : ''}</b>`}</p>
+  ${S.myItems === null ? '<div class="spinner" style="margin:8px auto;width:20px;height:20px"></div>' : ''}
   <input data-bind="cat.q" data-live="catalog" value="${esc(S.cat.q)}" placeholder="🔍 Пошук: меч, зілля, плащ…" class="mt">
   <div class="chips">${CAT_GROUPS.map(([k, t]) => `<button class="chip ${S.cat.group === k ? 'on' : ''}" data-act="catGroup" data-g="${k}">${t}</button>`).join('')}</div>
   <div class="chips"><button class="chip ${S.cat.rarity === 'all' ? 'on' : ''}" data-act="catRarity" data-r="all">Будь-яка рідкість</button>
   ${R.RARITY_IDS.map((k) => `<button class="chip rc-${k} ${S.cat.rarity === k ? 'on' : ''}" data-act="catRarity" data-r="${k}"><span class="rname">${R.RARITIES[k].name}</span></button>`).join('')}</div>
-  <button class="btn block mt" data-act="customItem">＋ Створити свій предмет</button>
+  <button class="btn block mt" data-act="${manage ? 'myNewItem' : 'customItem'}">＋ ${manage ? 'Новий предмет у каталог' : 'Створити свій предмет'}</button>
   <div id="catList">${catalogListHtml()}</div>`;
 }
 
@@ -963,12 +1032,14 @@ const MODALS = {
     const ch = currentChar();
     const showWeapon = ['weapon', 'ammo', 'staff', 'rod', 'other'].includes(f.type);
     const showArmor = ['armor', 'shield'].includes(f.type);
-    const title = m.mode === 'edit' ? '✏️ Редагувати предмет' : m.mode === 'custom' ? '＋ Свій предмет' : '🎁 Видати предмет';
-    return `${hdr(title, ch ? `Персонаж: ${esc(ch.sheet.name)}` : '')}
+    const mine = m.mode === 'myNew' || m.mode === 'myEdit';
+    const title = { edit: '✏️ Редагувати предмет', custom: '＋ Свій предмет', issue: '🎁 Видати предмет', myNew: '📦 Новий предмет у каталог', myEdit: '📦 Мій предмет' }[m.mode];
+    return `${hdr(title, mine ? 'Твій каталог — спільний для всіх кімнат' : ch ? `Персонаж: ${esc(ch.sheet.name)}` : '')}
     <div class="card rc-${esc(f.rarity)} center"><span class="rname" style="font-size:18px">${ITEM_ICON[f.type] || ''} ${esc(f.name || 'Без назви')}</span><br><small>${R.RARITIES[f.rarity].name}</small></div>
     ${f.desc && m.mode === 'issue' ? `<div class="textblock mt">${esc(f.desc)}</div>` : ''}
-    ${m.mode !== 'edit' ? `<div class="card"><label class="fld" style="margin:0"><span>Кількість</span><div class="stepper"><button data-act="qtyStep" data-d="-1">−</button>
+    ${m.mode === 'issue' || m.mode === 'custom' ? `<div class="card"><label class="fld" style="margin:0"><span>Кількість</span><div class="stepper"><button data-act="qtyStep" data-d="-1">−</button>
       <input type="number" data-bind="modal.qty" value="${m.qty}" min="1"><button data-act="qtyStep" data-d="1">+</button></div></label>
+      ${m.mode === 'custom' ? `<label class="row fld"><input type="checkbox" data-bind="modal.saveMine" ${m.saveMine ? 'checked' : ''}><span>Також зберегти в мій каталог</span></label>` : ''}
       <button class="btn primary block mt" data-act="saveItemForm">Видати ${ch ? esc(ch.sheet.name) : ''}</button></div>` : ''}
     <details ${m.mode !== 'issue' ? 'open' : ''}><summary>Властивості предмета${m.mode === 'issue' ? ' (можна змінити перед видачею)' : ''}</summary>
     <label class="fld"><span>Назва</span><input data-bind="modal.form.name" value="${esc(f.name)}" maxlength="80"></label>
@@ -994,7 +1065,9 @@ const MODALS = {
     <label class="fld"><span>Налаштування (порожньо — не потрібне)</span><input data-bind="modal.form.attune" value="${esc(f.attune || '')}" placeholder="так / так (заклинач)"></label>
     <label class="fld"><span>Опис</span><textarea data-bind="modal.form.desc" maxlength="4000">${esc(f.desc || '')}</textarea></label>
     </details>
-    ${m.mode === 'edit' ? '<button class="btn primary block mt2" data-act="saveItemForm">💾 Зберегти</button>' : ''}`;
+    ${m.mode === 'edit' ? '<button class="btn primary block mt2" data-act="saveItemForm">💾 Зберегти</button>' : ''}
+    ${mine ? `<button class="btn primary block mt2" data-act="saveItemForm">💾 Зберегти в каталог</button>
+      ${m.mode === 'myEdit' ? '<button class="btn danger block mt" data-act="deleteMyItem">🗑 Видалити з каталогу</button>' : ''}` : ''}`;
   },
 
   spell: (m) => {
@@ -1125,6 +1198,19 @@ const MODALS = {
       <div class="ln"><span>Кості хітів</span><span class="v">${nl}×к${cls.hd}</span></div></div>
     <button class="btn primary block mt" data-act="lvSubmit">✅ Підвищити рівень</button>`;
     return h;
+  },
+
+  catView: (m) => {
+    const it = CATALOG.find((x) => x.catalogId === m.id);
+    if (!it) return null;
+    const rows = [['Рідкість', R.RARITIES[it.rarity].name], ['Тип', R.ITEM_TYPES[it.type]], ['Ціна', it.cost], ['Вага', it.weight != null ? `${it.weight} фнт` : ''],
+      ['Шкода', [it.damage, it.dmgType].filter(Boolean).join(' ')], ['Дод. шкода', it.damage2], ['Властивості', it.props], ['КЗ', it.ac], ['Магічний бонус', it.bonus ? `+${it.bonus}` : ''],
+      ['Налаштування', it.attune], ['Витратний', R.isConsumable(it) ? 'так' : '']].filter(([, v]) => v !== '' && v != null && v !== undefined);
+    return `<div class="rc-${esc(it.rarity)}">${hdr(`<span class="rname">${ITEM_ICON[it.type] || ''} ${esc(it.name)}</span>`, 'Предмет D&D 5e (SRD)')}</div>
+    <dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+    ${it.desc ? `<div class="textblock mt">${esc(it.desc)}</div>` : ''}
+    <button class="btn primary block mt2" data-act="copyToMine" data-id="${esc(it.catalogId)}">📋 Зберегти копію в мій каталог</button>
+    <p class="hint">Копію можна змінити: назву, шкоду, опис, рідкість тощо.</p>`;
   },
 
   featInfo: (m) => {
@@ -1520,16 +1606,34 @@ const ACT = {
     const it = ch.items.find((x) => x.id === S.modal.id);
     openModal({ type: 'itemForm', mode: 'edit', itemId: it.id, charId: ch.id, form: clone(it.data), qty: it.qty });
   },
-  openCatalog: () => { closeModal(); go('catalog', { charId: currentChar().id }); },
+  openCatalog: () => { closeModal(); S.cat = { q: '', group: 'all', rarity: 'all' }; go('catalog', { charId: currentChar().id }); loadMyItems(); },
+  openMyCatalog: () => { S.cat = { q: '', group: 'all', rarity: 'all' }; go('catalog', {}); loadMyItems(); },
+  myNewItem: () => openModal({ type: 'itemForm', mode: 'myNew', form: itemFormBlank(), qty: 1 }),
+  copyToMine: ({ id }) => {
+    const form = clone(CATALOG.find((x) => x.catalogId === id));
+    delete form.group;
+    openModal({ type: 'itemForm', mode: 'myNew', form, qty: 1 });
+  },
+  deleteMyItem: async () => {
+    const m = S.modal;
+    if (!(await confirmBox(`Видалити «${m.form.name}» з каталогу? Уже видані гравцям предмети залишаться.`))) return;
+    const ok = await run(() => api('deleteMyItem', { id: m.myId }), 'Видалено з каталогу');
+    if (ok) { closeModal(); await loadMyItems(); }
+  },
   catGroup: ({ g }) => { S.cat.group = g; render(); },
   catRarity: ({ r }) => { S.cat.rarity = r; render(); },
   catPick: ({ id }) => {
-    const it = CATALOG.find((x) => x.catalogId === id);
+    const manage = !cur().charId;
+    const mine = myCatalog().find((x) => x.catalogId === id);
+    if (manage && !mine) { openModal({ type: 'catView', id }); return; }
+    const it = mine || CATALOG.find((x) => x.catalogId === id);
     const form = clone(it);
-    delete form.group;
-    openModal({ type: 'itemForm', mode: 'issue', charId: cur().charId, form, qty: 1 });
+    for (const k of ['group', 'myId', 'srcId']) delete form[k];
+    form.catalogId = mine ? it.srcId || '' : it.catalogId;
+    if (manage) openModal({ type: 'itemForm', mode: 'myEdit', myId: mine.myId, form, qty: 1 });
+    else openModal({ type: 'itemForm', mode: 'issue', charId: cur().charId, form, qty: 1 });
   },
-  customItem: () => openModal({ type: 'itemForm', mode: 'custom', charId: currentChar().id, form: itemFormBlank(), qty: 1 }),
+  customItem: () => openModal({ type: 'itemForm', mode: 'custom', charId: currentChar().id, form: itemFormBlank(), qty: 1, saveMine: true }),
   saveItemForm: async () => {
     const m = S.modal;
     if (!String(m.form.name || '').trim()) { toast('Вкажи назву предмета', true); return; }
@@ -1538,6 +1642,12 @@ const ACT = {
       if (ok) closeModal();
       return;
     }
+    if (m.mode === 'myNew' || m.mode === 'myEdit') {
+      const ok = await run(() => api('saveMyItem', { id: m.mode === 'myEdit' ? m.myId : undefined, item: m.form }), '📦 Збережено в каталог');
+      if (ok) { closeModal(); await loadMyItems(); }
+      return;
+    }
+    if (m.mode === 'custom' && m.saveMine) { api('saveMyItem', { item: m.form }).then(() => loadMyItems()).catch(() => {}); }
     const ch = currentChar();
     const q = Math.max(1, Math.trunc(num(m.qty, 1)));
     const ok = await reloadAfter(() => api('masterAddItem', { charId: m.charId, item: m.form, qty: q }), `🎁 Видано ${ch ? ch.sheet.name : ''}: ${m.form.name} ×${q}`);
@@ -1689,6 +1799,17 @@ const ACT = {
   },
 };
 
+async function loadMyItems() {
+  try {
+    const r = await api('myItems');
+    S.myItems = r.items;
+  } catch (e) {
+    if (S.myItems === null) S.myItems = [];
+    toast(e.message, true);
+  }
+  if (cur().view === 'catalog') render();
+}
+
 async function loadLog() {
   try {
     S.log = await api('logList', { roomId: roomId(), all: S.logAll });
@@ -1745,16 +1866,10 @@ document.addEventListener('change', (e) => {
 });
 function getArr(path) { return path.split('.').reduce((o, k) => o[k], S); }
 
-// Автооновлення даних кімнати
-setInterval(() => {
-  const v = cur().view;
-  if (!['room', 'char'].includes(v) || S.modal || document.hidden || busyN > 0) return;
-  const a = document.activeElement;
-  if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) return;
-  loadRoom(true);
-}, 12000);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && ['room', 'char'].includes(cur().view)) loadRoom(true);
+  if (document.hidden) return;
+  if (S.roomId && S.nav.some((v) => v.view === 'room')) loadRoom(true);
+  else if (['masterHome', 'playerHome'].includes(cur().view)) loadMe(true);
 });
 
 // ================= Старт =================
