@@ -1,6 +1,7 @@
 // DnD Companion — Telegram Mini App
 import * as R from './shared/rules.js';
 import { CATALOG, BASE_WEAPONS } from './data/items.js';
+import { featureDetails, resourceDetails } from './shared/details.js';
 
 const tg = window.Telegram && window.Telegram.WebApp;
 const CFG = window.DND_CONFIG || {};
@@ -296,7 +297,7 @@ function playerCard(p) {
     <div class="meta"><b>${esc(s.name)}</b><small>${esc(raceName(s))} · ${esc(className(s))} ${s.level} рів. · ${esc(p.name)}</small></div>
     <div class="center"><small>КЗ</small><div><b>${dv.ac}</b></div></div><span class="chev">›</span></div>
     <div class="row mt" style="margin-top:8px"><small class="grow">ХП ${s.hp.cur}/${s.hp.max}${s.hp.temp ? ` (+${s.hp.temp})` : ''}</small>
-    ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${R.shortRestActive(s, nowSec()) ? ' <span class="badge green">☕</span>' : ''}${s.inspiration ? '<span class="badge gold">⭐</span>' : ''}</div>
+    ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${R.shortRestActive(s, nowSec()) ? ' <span class="badge green">☕</span>' : ''}${R.inspCount(s) ? ` <span class="badge gold">⭐ ${R.inspCount(s)}</span>` : ''}</div>
     <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div></div>`;
 }
 function playerNoCharHtml(d) {
@@ -318,7 +319,8 @@ function charHtml(ch, M) {
   let h = M
     ? `<div class="top"><small class="hint">Гравець: ${esc(charOwnerName(ch))}</small></div>`
     : `<div class="top"><small class="hint">🏰 ${esc(S.room.room.name)}</small><button class="link" data-act="roomMenu">⋯</button></div>`;
-  h += `<div class="char-head"><div class="nm">${CLASS_ICON[s.classId] || ''} ${esc(s.name)}${s.inspiration ? ' <span title="Натхнення">⭐</span>' : ''}</div>
+  const insp = R.inspCount(s);
+  h += `<div class="char-head"><div class="nm">${CLASS_ICON[s.classId] || ''} ${esc(s.name)}${insp ? ` <span class="badge gold" title="Натхнення">⭐ ${insp}</span>` : ''}</div>
     <div class="sub">${esc(raceName(s))} · ${esc(className(s))}${s.subclass ? ` (${esc(s.subclass)})` : ''} · ${s.level} рівень</div>
     <div class="xp"><div class="bar"><i style="width:${pct}%"></i></div><small>Досвід: ${s.xp}${next ? ` / ${next}` : ''}</small></div></div>
   <div class="stats">
@@ -376,7 +378,8 @@ function sheetTab(ch, dv) {
     <div class="ln"><span>Пасивна уважність</span><span class="v">${dv.pp}</span></div>
     <div class="ln"><span>Кості хітів</span><span class="v">${s.level - s.hitDiceUsed}/${s.level} × к${cls ? cls.hd : '?'}</span></div>
     <div class="ln"><span>Рятівні від смерті</span><span class="v">✅ ${s.deathSaves.s}/3 · ❌ ${s.deathSaves.f}/3</span></div>
-    <div class="ln"><span>Натхнення</span><span class="v">${s.inspiration ? '⭐ є' : '—'}</span></div></div>`;
+    <div class="ln"><span class="grow">Натхнення</span><span class="v">⭐ ${R.inspCount(s)}</span>${isMaster() ? '<div class="stepper" style="margin-left:8px"><button data-act="insp" data-d="-1">−</button><button data-act="insp" data-d="1">+</button></div>' : ''}</div>
+    ${isMaster() ? '' : '<div class="ln"><span class="hint">Натхнення дає й забирає майстер.</span></div>'}</div>`;
   const weapons = (ch.items || []).map((it) => ({ it, d: withBase(it.data) }))
     .filter(({ d }) => d.type === 'weapon' || (['staff', 'rod'].includes(d.type) && d.damage))
     .sort((a, b) => Number(b.it.equipped) - Number(a.it.equipped));
@@ -404,10 +407,10 @@ function spellsTab(ch, dv, M) {
     h += `<div class="lines"><h3>Ресурси</h3>${res.map((r) => {
       const icon = r.recharge === 'short' ? '☕' : '🌙';
       if (r.pool || r.max > 12) {
-        return `<div class="ln"><span class="grow">${esc(r.name)} <span class="hint">${icon}</span></span><span class="v">${r.max - r.used}/${r.max}</span>
+        return `<div class="ln"><span class="grow">${esc(r.name)} <span class="hint">${icon}</span></span>${infoBtn('resInfo', `data-id="${r.id}"`)}<span class="v">${r.max - r.used}/${r.max}</span>
         <button class="btn sm" data-act="poolModal" data-id="${r.id}">${M ? 'Змінити' : 'Витратити'}</button></div>`;
       }
-      return `<div class="ln"><span style="min-width:120px">${esc(r.name)} <span class="hint">${icon}</span></span>
+      return `<div class="ln"><span style="min-width:120px" class="row">${esc(r.name)} <span class="hint">${icon}</span>${infoBtn('resInfo', `data-id="${r.id}"`)}</span>
         <div class="slots">${Array.from({ length: r.max }, (_, j) => `<button class="slot ${j < r.used ? 'used' : 'free'}" data-act="res" data-id="${r.id}" data-j="${j}"></button>`).join('')}</div>
         <span class="v hint">${r.max - r.used}/${r.max}</span></div>`;
     }).join('')}<div class="ln"><span class="hint">☕ — відновлюється на короткому, 🌙 — на довгому відпочинку (оголошує майстер).</span></div></div>`;
@@ -453,7 +456,7 @@ function spellsTab(ch, dv, M) {
     const order = ['race', 'class', 'subclass', 'choice', 'feat', 'custom'];
     for (const src of order) {
       const part = feats.filter((x) => (x.src || 'custom') === src).sort((a, b) => a.lvl - b.lvl);
-      if (part.length) h += `<div class="spell-lvl">${SRC_LABEL[src]}</div>${featureListHtml(part, { showLvl: src !== 'race', del: M })}`;
+      if (part.length) h += `<div class="spell-lvl">${SRC_LABEL[src]}</div>${featureListHtml(part, { showLvl: src !== 'race', del: M, compact: true })}`;
     }
   }
   h += '</div>';
@@ -527,8 +530,14 @@ function choicesHtml(specs, optSheet, level, path, picks) {
     }).join('')}</div>`;
   }).join('');
 }
+const infoBtn = (act, attrs) => `<button class="info-i" data-act="${act}" ${attrs} aria-label="Детальніше">i</button>`;
 function featureListHtml(list, opts = {}) {
   if (!list.length) return '';
+  if (opts.compact) {
+    return list.map((x) => `<div class="ln tapline" data-act="featInfo" data-i="${x._i}"><span class="grow"><b>${esc(x.name)}</b>
+      ${opts.showLvl ? ` <span class="badge">${x.lvl} рів.</span>` : ''}</span>${infoBtn('featInfo', `data-i="${x._i}"`)}
+      ${opts.del ? `<button class="x" data-act="delFeature" data-i="${x._i}">✕</button>` : ''}</div>`).join('');
+  }
   return list.map((x) => `<div class="ln" style="align-items:flex-start"><span class="grow"><b>${esc(x.name)}</b>
     ${opts.showLvl ? ` <span class="badge">${x.lvl} рів.</span>` : ''}${opts.showSrc ? ` <span class="badge">${SRC_LABEL[x.src] || ''}</span>` : ''}
     ${x.desc ? `<br><small>${esc(x.desc)}</small>` : ''}</span>${opts.del ? `<button class="x" data-act="delFeature" data-i="${x._i}">✕</button>` : ''}</div>`).join('');
@@ -814,7 +823,7 @@ function editSheetHtml() {
     <div class="grid3"><label class="fld"><span>Бонус ініціат.</span>${numIn('edit.initBonus', e.initBonus)}</label><label class="fld"><span>Майстерність</span>${numIn('edit.profOverride', e.profOverride, 'placeholder="авто"')}</label>
     <label class="fld"><span>Витр. кості хітів</span>${numIn('edit.hitDiceUsed', e.hitDiceUsed)}</label></div>
     <div class="grid3"><label class="fld"><span>Успіхи від смерті</span>${numIn('edit.deathSaves.s', e.deathSaves.s)}</label><label class="fld"><span>Провали від смерті</span>${numIn('edit.deathSaves.f', e.deathSaves.f)}</label>
-    <label class="row fld" style="margin-top:28px"><input type="checkbox" data-bind="edit.inspiration" ${e.inspiration ? 'checked' : ''}><span>Натхнення ⭐</span></label></div></div>
+    <label class="fld"><span>Натхнення ⭐</span>${numIn('edit.inspiration', R.inspCount(e), 'min="0" max="99"')}</label></div></div>
   <div class="card"><h3>Закляття</h3>
     <label class="fld"><span>Заклинальна характеристика</span><select data-bind="edit.spell.ability"><option value="">Авто (за класом)</option>${R.ABILITIES.map((a) => `<option value="${a}" ${e.spell.ability === a ? 'selected' : ''}>${R.ABILITY_NAMES[a]}</option>`).join('')}</select></label>
     <label class="row fld"><input type="checkbox" data-act="toggleSlotsOverride" ${Array.isArray(e.spell.slotsOverride) ? 'checked' : ''}><span>Задати комірки вручну (авто: ${auto.join('/') || 'немає'})</span></label>
@@ -868,7 +877,7 @@ const MODALS = {
     <div class="ln"><span class="grow">✅ Успіхи: ${s.deathSaves.s}/3</span><div class="stepper"><button data-act="dsStep" data-k="s" data-d="-1">−</button><button data-act="dsStep" data-k="s" data-d="1">+</button></div></div>
     <div class="ln"><span class="grow">❌ Провали: ${s.deathSaves.f}/3</span><div class="stepper"><button data-act="dsStep" data-k="f" data-d="-1">−</button><button data-act="dsStep" data-k="f" data-d="1">+</button></div></div>
     <div class="ln"><span class="grow">🎲 Кості хітів: ${s.level - s.hitDiceUsed}/${s.level}</span>${M ? '<div class="stepper"><button data-act="hdStep" data-d="1" title="Витратити">−</button><button data-act="hdStep" data-d="-1" title="Відновити">+</button></div>' : '<small class="hint">витрачаються на короткому відпочинку</small>'}</div>
-    <div class="ln"><span class="grow">⭐ Натхнення: ${s.inspiration ? 'є' : 'немає'}</span>${M ? `<button class="btn sm" data-act="inspiration">${s.inspiration ? 'Забрати' : 'Дати'}</button>` : s.inspiration ? '<button class="btn sm" data-act="inspiration">Використати</button>' : ''}</div>
+    <div class="ln"><span class="grow">⭐ Натхнення: ${R.inspCount(s)}</span>${M ? '<div class="stepper"><button data-act="insp" data-d="-1">−</button><button data-act="insp" data-d="1">+</button></div>' : '<small class="hint">дає майстер</small>'}</div>
     ${M ? `<div class="btns"><button class="btn" data-act="rest" data-kind="short">☕ Короткий відпочинок</button><button class="btn" data-act="rest" data-kind="long">🌙 Довгий відпочинок</button></div>`
       : '<p class="hint mt">Зміни хітів бачить майстер у журналі. Відпочинок оголошує майстер.</p>'}`;
   },
@@ -1118,6 +1127,23 @@ const MODALS = {
     return h;
   },
 
+  featInfo: (m) => {
+    const ch = currentChar();
+    const f = ch && (ch.sheet.features || [])[m.i];
+    if (!f) return null;
+    const s = ch.sheet;
+    const src = { race: `Раса: ${raceName(s)}`, class: `Клас: ${className(s)}`, subclass: `Підклас: ${s.subclass || '—'}`, choice: 'Вибір за класом', feat: 'Риса', custom: 'Додано майстром' }[f.src || 'custom'];
+    const det = featureDetails(s, f);
+    return `${hdr(esc(f.name), `${esc(src)}${f.src !== 'race' ? ` · отримано на ${f.lvl} рівні` : ''}`)}${infoBody(f.desc, det)}`;
+  },
+  resInfo: (m) => {
+    const ch = currentChar();
+    const r = ch && R.sheetResources(ch.sheet).find((x) => x.id === m.id);
+    if (!r) return null;
+    const det = resourceDetails(ch.sheet, r);
+    return `${hdr(esc(det.title), 'Ресурс класу')}${infoBody(det.desc, det)}`;
+  },
+
   featureForm: (m) => `${hdr('＋ Нове вміння')}
     <label class="fld"><span>Назва</span><input data-bind="modal.name" value="${esc(m.name)}" maxlength="100"></label>
     <label class="fld"><span>Рівень</span><input type="number" data-bind="modal.lvl" value="${esc(m.lvl)}" min="1" max="20"></label>
@@ -1134,6 +1160,13 @@ const MODALS = {
     <button class="btn primary block mt2" data-act="poolSave">${M ? 'Зберегти' : 'Витратити'}</button>`;
   },
 };
+
+function infoBody(desc, det) {
+  return `${desc ? `<p class="textblock" style="padding-top:10px">${esc(desc)}</p>` : ''}
+    ${det.stats.length ? `<div class="card"><h3>Для персонажа зараз</h3><dl class="kv">${det.stats.map(([k, v]) => `<dt>${esc(k)}</dt><dd><b>${esc(v)}</b></dd>`).join('')}</dl></div>` : ''}
+    ${det.lines.length ? `<div class="card"><h3>Як працює</h3><ul class="rules">${det.lines.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    ${!desc && !det.stats.length && !det.lines.length ? '<p class="hint mt">Опису немає.</p>' : ''}`;
+}
 
 function inviteLink(code) {
   const bot = (S.me && S.me.botUsername) || CFG.BOT_USERNAME || '';
@@ -1315,10 +1348,14 @@ const ACT = {
     const v = Math.max(0, Math.min(ch.sheet.level, ch.sheet.hitDiceUsed + Number(d)));
     await reloadAfter(() => updateTrackers(ch, { hitDiceUsed: v }));
   },
-  inspiration: async () => {
+  insp: async ({ d }) => {
     const ch = currentChar();
-    await reloadAfter(() => updateTrackers(ch, { inspiration: !ch.sheet.inspiration }));
+    if (Number(d) < 0 && !R.inspCount(ch.sheet)) return;
+    tapFx();
+    await reloadAfter(() => updateTrackers(ch, { inspDelta: Number(d) }), Number(d) > 0 ? '⭐ Натхнення додано' : 'Натхнення забрано');
   },
+  featInfo: ({ i }) => openModal({ type: 'featInfo', i: Number(i) }),
+  resInfo: ({ id }) => openModal({ type: 'resInfo', id }),
   rest: async ({ kind }) => {
     const ch = currentChar();
     const txt = kind === 'long' ? 'Довгий відпочинок: повні хіти, комірки заклять і ресурси, половина костей хітів.' : 'Короткий відпочинок: відновлюються ресурси ☕ (і комірки чаклуна), гравець зможе витратити кості хітів.';
@@ -1605,6 +1642,7 @@ const ACT = {
   lvSubmit: async () => {
     const ch = currentChar();
     const m = S.modal;
+    if (R.subclassNeeded(ch.sheet, ch.sheet.level + 1) && !m.subclassId) { toast(`Обери: ${R.CLASS_DATA[ch.sheet.classId].subclassLabel.toLowerCase()}`, true); return; }
     const r = await run(() => api('levelUp', {
       charId: ch.id, hpMethod: m.hpMethod, asi: m.asiMode === 'asi' ? m.asi : null, feat: m.asiMode === 'feat' ? m.feat : null,
       expertise: m.expertise, subclassId: m.subclassId, choices: m.choices,

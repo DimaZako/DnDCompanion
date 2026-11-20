@@ -294,6 +294,8 @@ export function passivePerception(sheet) {
   return 10 + skillValue(sheet, 'perception') + Number(sheet.passiveBonus || 0);
 }
 
+export const inspCount = (s) => (typeof s.inspiration === 'number' ? s.inspiration : s.inspiration ? 1 : 0);
+
 export function emptyMoney() { return { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }; }
 
 export function newSheetTemplate() {
@@ -302,7 +304,7 @@ export function newSheetTemplate() {
     level: 1, xp: 0, targetLevel: 1,
     abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
     saves: [], skills: {},
-    hp: { max: 1, cur: 1, temp: 0 }, hitDiceUsed: 0, deathSaves: { s: 0, f: 0 }, inspiration: false,
+    hp: { max: 1, cur: 1, temp: 0 }, hitDiceUsed: 0, deathSaves: { s: 0, f: 0 }, inspiration: 0,
     speed: 30, acBonus: 0, acOverride: null, initBonus: 0, profOverride: null,
     text: {}, spell: { ability: null, slotsUsed: [0, 0, 0, 0, 0, 0, 0, 0, 0], slotsOverride: null, spells: [] },
     money: emptyMoney(),

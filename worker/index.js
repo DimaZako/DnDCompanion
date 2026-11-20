@@ -416,7 +416,7 @@ export function sanitizeSheetByMaster(input, old) {
     if ('s' in i.deathSaves) s.deathSaves.s = int(i.deathSaves.s, 0, 3, 0);
     if ('f' in i.deathSaves) s.deathSaves.f = int(i.deathSaves.f, 0, 3, 0);
   }
-  if ('inspiration' in i) s.inspiration = !!i.inspiration;
+  if ('inspiration' in i) s.inspiration = i.inspiration === true ? 1 : i.inspiration === false ? 0 : int(i.inspiration, 0, 99, R.inspCount(s));
   if ('speed' in i) s.speed = int(i.speed, 0, 500, s.speed);
   if ('acBonus' in i) s.acBonus = int(i.acBonus, -30, 30, 0);
   if ('acOverride' in i) s.acOverride = int(i.acOverride, 0, 60, null);
@@ -466,7 +466,7 @@ export function describeSheetDiff(a, b) {
   cmp('Використані кості хітів', a.hitDiceUsed, b.hitDiceUsed);
   cmp('Успіхи рятівних від смерті', a.deathSaves.s, b.deathSaves.s);
   cmp('Провали рятівних від смерті', a.deathSaves.f, b.deathSaves.f);
-  cmp('Натхнення', a.inspiration, b.inspiration);
+  cmp('Натхнення', R.inspCount(a), R.inspCount(b));
   cmp('Швидкість', a.speed, b.speed);
   cmp('Бонус КЗ', a.acBonus, b.acBonus);
   cmp('КЗ (вручну)', a.acOverride, b.acOverride);
@@ -739,9 +739,10 @@ const OPS = {
       const max = R.sheetSlots(s);
       s.spell.slotsUsed = Array.from({ length: 9 }, (_, i) => int(p.slotsUsed[i], 0, max[i] || 0, 0));
     }
-    if ('inspiration' in p) {
-      if (isMaster) s.inspiration = !!p.inspiration;
-      else if (p.inspiration === false) s.inspiration = false;
+    if ('inspiration' in p || 'inspDelta' in p) {
+      if (!isMaster) fail('Натхнення дає й забирає лише майстер');
+      const cur = R.inspCount(s);
+      s.inspiration = 'inspDelta' in p ? Math.max(0, Math.min(99, cur + int(p.inspDelta, -99, 99, 0))) : int(p.inspiration, 0, 99, cur);
     }
     const diff = describeSheetDiff(old, s);
     if (!diff.length) return { ok: true };
@@ -749,10 +750,11 @@ const OPS = {
     const text = [...extra, ...diff].join('; ');
     if (isMaster) {
       await addLog(c, room, `${s.name}: ${text}`);
-      notify(c, ch.userId, `🎲 Майстер: ${s.name} — ${text}`);
+      const di = R.inspCount(s) - R.inspCount(old);
+      if (di && diff.length === 1) notify(c, ch.userId, di > 0 ? `⭐ Майстер дав тобі натхнення! Тепер: ${R.inspCount(s)}` : `Майстер забрав натхнення. Тепер: ${R.inspCount(s)}`);
+      else notify(c, ch.userId, `🎲 Майстер: ${s.name} — ${text}`);
     } else {
       await addLog(c, room, text, charActor(c, ch));
-      if (old.inspiration && !s.inspiration) notify(c, room.master_id, `✨ ${s.name} використав натхнення.`);
     }
     return { ok: true };
   },
