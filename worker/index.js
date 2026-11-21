@@ -79,6 +79,8 @@ function ensureSchema(db) {
       .then(() => db.prepare('ALTER TABLE rooms ADD COLUMN max_start_level INTEGER NOT NULL DEFAULT 1').run().catch(() => {}))
       // мова інтерфейсу й сповіщень користувача (uk / ru / en)
       .then(() => db.prepare('ALTER TABLE users ADD COLUMN lang TEXT').run().catch(() => {}))
+      // гравець попросив майстра допомогти створити персонажа (час прохання)
+      .then(() => db.prepare('ALTER TABLE members ADD COLUMN help_req INTEGER').run().catch(() => {}))
       .catch((e) => { schemaReady = null; throw e; });
   }
   return schemaReady;
@@ -361,6 +363,20 @@ async function addLog(c, room, text, actorOverride) {
   ]);
 }
 const charActor = (c, ch) => `${ch.sheet.name} (${c.user.name})`;
+// Для кого створюється персонаж: сам гравець або (за його проханням) майстер замість гравця
+async function creationTarget(c, room, forUserId) {
+  const uid = forUserId == null || forUserId === '' ? c.user.id : int(forUserId, 1, 1e15, 0);
+  const helper = uid !== c.user.id;
+  if (helper && room.master_id !== c.user.id) fail('Це може робити лише майстер кімнати');
+  const mem = await first(c.db, 'SELECT * FROM members WHERE room_id = ? AND user_id = ?', room.id, uid);
+  if (!mem) fail(helper ? 'Гравець уже не в кімнаті' : 'Ти не в цій кімнаті');
+  if (await first(c.db, 'SELECT 1 AS x FROM characters WHERE room_id = ? AND user_id = ? AND alive = 1', room.id, uid)) {
+    fail(helper ? 'У гравця вже є інший живий персонаж' : 'У тебе вже є живий персонаж');
+  }
+  if (helper && !mem.help_req) fail('Гравець не просив допомоги або скасував прохання');
+  const u = helper ? await first(c.db, 'SELECT first_name FROM users WHERE id = ?', uid) : null;
+  return { uid, helper, mem, name: helper ? (u ? u.first_name : String(uid)) : c.user.name };
+}
 const itemName = (it) => `«${it.data.name}»`;
 const moneyStr = (m) => R.COINS.filter((k) => m[k]).map((k) => `${m[k]} ${R.COIN_NAMES[k]}`).join(', ') || '0';
 
@@ -779,16 +795,19 @@ const OPS = {
     const master = await first(c.db, 'SELECT first_name FROM users WHERE id = ?', room.master_id);
     const base = { id: room.id, name: room.name, session: room.session, version: room.version || 0, maxStartLevel: room.max_start_level || 1, masterName: master ? master.first_name : '' };
     if (room.master_id === c.user.id) {
-      const members = await all(c.db, `SELECT m.user_id, m.joined_at, u.first_name, u.username FROM members m
+      const members = await all(c.db, `SELECT m.user_id, m.joined_at, m.help_req, m.last_roll, u.first_name, u.username FROM members m
         LEFT JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`, room.id);
       const chars = (await all(c.db, 'SELECT * FROM characters WHERE room_id = ? ORDER BY id', room.id)).map(parseChar);
       const alive = chars.filter((ch) => ch.alive);
       const items = await loadItems(c, alive.map((ch) => ch.id));
       for (const ch of alive) ch.items = items.filter((it) => it.charId === ch.id);
-      const players = members.map((m) => ({
-        userId: m.user_id, name: m.first_name, username: m.username, joinedAt: m.joined_at,
-        character: alive.filter((ch) => ch.userId === m.user_id).pop() || null,
-      }));
+      const players = members.map((m) => {
+        const character = alive.filter((ch) => ch.userId === m.user_id).pop() || null;
+        const helpRequested = !character && !!m.help_req;
+        // кидок характеристик гравця потрібен майстрові, щоб створити персонажа за нього
+        return { userId: m.user_id, name: m.first_name, username: m.username, joinedAt: m.joined_at, character, helpRequested,
+          lastRoll: helpRequested && m.last_roll ? JSON.parse(m.last_roll) : null };
+      });
       const fallen = chars.filter((ch) => !ch.alive).map((ch) => ({ id: ch.id, userId: ch.userId, name: ch.sheet.name, level: ch.sheet.level, classId: ch.sheet.classId }));
       return { role: 'master', room: base, players, fallen, maxPlayers: MAX_PLAYERS };
     }
@@ -801,7 +820,7 @@ const OPS = {
       .map((r) => ({ charId: r.id, name: JSON.parse(r.sheet).name, playerName: r.first_name }));
     const fallen = (await all(c.db, 'SELECT id, sheet FROM characters WHERE room_id = ? AND user_id = ? AND alive = 0 ORDER BY id DESC', room.id, c.user.id))
       .map((r) => { const s = JSON.parse(r.sheet); return { id: r.id, name: s.name, level: s.level, classId: s.classId }; });
-    return { role: 'player', room: base, character, mates, fallen, lastRoll: mem.last_roll ? JSON.parse(mem.last_roll) : null };
+    return { role: 'player', room: base, character, mates, fallen, lastRoll: mem.last_roll ? JSON.parse(mem.last_roll) : null, helpRequested: !character && !!mem.help_req };
   },
 
   // Довге опитування: відповідає, щойно версія кімнати зміниться (або за ~20 с)
@@ -843,21 +862,40 @@ const OPS = {
     await run(c.db, 'DELETE FROM master_items WHERE id = ? AND owner_id = ?', int(id, 0, 1e12, 0), c.user.id);
   },
 
-  async rollAbilities(c, { roomId }) {
-    const room = await getRoom(c, roomId);
-    if (!(await isMember(c, room.id))) fail('Ти не в цій кімнаті');
-    if (await first(c.db, 'SELECT 1 AS x FROM characters WHERE room_id = ? AND user_id = ? AND alive = 1', room.id, c.user.id)) fail('У тебе вже є живий персонаж');
-    const rolls = Array.from({ length: 6 }, () => R.roll4d6DropLowest());
-    await run(c.db, 'UPDATE members SET last_roll = ? WHERE room_id = ? AND user_id = ?', JSON.stringify(rolls), room.id, c.user.id);
-    await addLog(c, room, `кинув характеристики (4к6, без найменшого): ${rolls.join(', ')}`);
-    return { rolls };
-  },
-
-  async createCharacter(c, { roomId, method, input }) {
+  // Гравець просить майстра допомогти створити персонажа (або скасовує прохання)
+  async askMaster(c, { roomId, cancel }) {
     const room = await getRoom(c, roomId);
     const mem = await first(c.db, 'SELECT * FROM members WHERE room_id = ? AND user_id = ?', room.id, c.user.id);
     if (!mem) fail('Ти не в цій кімнаті');
     if (await first(c.db, 'SELECT 1 AS x FROM characters WHERE room_id = ? AND user_id = ? AND alive = 1', room.id, c.user.id)) fail('У тебе вже є живий персонаж');
+    if (cancel) {
+      if (!mem.help_req) return { helpRequested: false };
+      await run(c.db, 'UPDATE members SET help_req = NULL WHERE room_id = ? AND user_id = ?', room.id, c.user.id);
+      await addLog(c, room, 'скасував прохання допомогти створити персонажа');
+      return { helpRequested: false };
+    }
+    if (mem.help_req) return { helpRequested: true };
+    await run(c.db, 'UPDATE members SET help_req = ? WHERE room_id = ? AND user_id = ?', now(), room.id, c.user.id);
+    await addLog(c, room, 'попросив майстра допомогти створити персонажа');
+    notify(c, room.master_id, `🙋 ${c.user.name} просить допомогти створити персонажа в кімнаті «${room.name}». Відкрий кімнату й натисни «Допомогти створити».`);
+    return { helpRequested: true };
+  },
+
+  async rollAbilities(c, { roomId, forUserId }) {
+    const room = await getRoom(c, roomId);
+    const t = await creationTarget(c, room, forUserId);
+    const rolls = Array.from({ length: 6 }, () => R.roll4d6DropLowest());
+    await run(c.db, 'UPDATE members SET last_roll = ? WHERE room_id = ? AND user_id = ?', JSON.stringify(rolls), room.id, t.uid);
+    await addLog(c, room, t.helper
+      ? `кинув характеристики для гравця ${t.name} (4к6, без найменшого): ${rolls.join(', ')}`
+      : `кинув характеристики (4к6, без найменшого): ${rolls.join(', ')}`);
+    return { rolls };
+  },
+
+  async createCharacter(c, { roomId, method, input, forUserId }) {
+    const room = await getRoom(c, roomId);
+    const tgt = await creationTarget(c, room, forUserId);
+    const mem = tgt.mem;
     const err = R.validateBase(method, input && input.base, mem.last_roll ? JSON.parse(mem.last_roll) : null);
     if (err) fail(err);
     const level = int(input && input.level, 1, 20, 1);
@@ -883,13 +921,19 @@ const OPS = {
         equipNote = `стартове спорядження: ${items.length} предметів, ${eq.gp} ЗМ`;
       }
     }
-    const t = now();
-    const r = await run(c.db, 'INSERT INTO characters (room_id, user_id, alive, sheet, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)', room.id, c.user.id, JSON.stringify(sheet), t, t);
+    const ts = now();
+    const r = await run(c.db, 'INSERT INTO characters (room_id, user_id, alive, sheet, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)', room.id, tgt.uid, JSON.stringify(sheet), ts, ts);
+    await run(c.db, 'UPDATE members SET help_req = NULL WHERE room_id = ? AND user_id = ?', room.id, tgt.uid);
     const newId = r.meta && r.meta.last_row_id;
     if (items.length) await giveStartItems(c, newId, sheet, items);
     const methodName = { standard: 'стандартний набір', pointbuy: 'купівля очками', roll: 'кидок кубиків' }[method];
     await addLog(c, room, `створив персонажа ${sheet.name}: ${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}${sheet.subclass ? ` (${sheet.subclass})` : ''} ${level} рів. (${methodName}; ${R.ABILITIES.map((a) => `${R.ABILITY_SHORT[a]} ${sheet.abilities[a]}`).join(', ')})${equipNote ? `; ${equipNote}` : ''}`);
-    notify(c, room.master_id, `🧝 ${c.user.name} створив персонажа «${sheet.name}» (${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}, ${level} рів.) у кімнаті «${room.name}».`);
+    if (tgt.helper) {
+      await addLog(c, room, `допоміг гравцю ${tgt.name} створити персонажа «${sheet.name}»`);
+      notify(c, tgt.uid, `🧙 Майстер створив для тебе персонажа «${sheet.name}» (${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}, ${level} рів.) у кімнаті «${room.name}». Відкрий застосунок, щоб грати.`);
+    } else {
+      notify(c, room.master_id, `🧝 ${c.user.name} створив персонажа «${sheet.name}» (${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}, ${level} рів.) у кімнаті «${room.name}».`);
+    }
     return { charId: newId };
   },
 

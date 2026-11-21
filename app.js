@@ -495,8 +495,10 @@ function masterRoomHtml(d) {
 function playerCard(p) {
   const ch = p.character;
   if (!ch) {
-    return `<div class="card list-item"><div class="ava">⏳</div><div class="meta"><b>${esc(p.name)}</b><small>ще не створив персонажа</small></div>
-    <button class="btn sm danger" data-act="kick" data-uid="${p.userId}" data-name="${esc(p.name)}">Видалити</button></div>`;
+    return `<div class="card list-item${p.helpRequested ? ' help-req' : ''}"><div class="ava">${p.helpRequested ? '🙋' : '⏳'}</div><div class="meta"><b>${esc(p.name)}</b>
+    <small>${p.helpRequested ? 'просить допомогти створити персонажа' : 'ще не створив персонажа'}</small></div>
+    ${p.helpRequested ? `<div class="help-actions"><button class="btn sm primary" data-act="helpCreate" data-uid="${p.userId}">Допомогти створити</button>` : ''}
+    <button class="btn sm danger" data-act="kick" data-uid="${p.userId}" data-name="${esc(p.name)}">Видалити</button>${p.helpRequested ? '</div>' : ''}</div>`;
   }
   const s = ch.sheet;
   const dv = derived(ch);
@@ -512,7 +514,11 @@ function playerNoCharHtml(d) {
   return `<div class="top"><h2>${esc(d.room.name)}</h2><button class="link" data-act="roomMenu">⋯</button></div>
   <div class="card center"><div style="font-size:52px">🎲</div><h3>Створи персонажа</h3>
     <p class="hint">Майстер: ${esc(d.room.masterName)}. Пройди кроки за правилами D&D 5e: раса, клас, характеристики, навички.</p>
-    <button class="btn primary block mt" data-act="startCreate">Створити персонажа</button></div>
+    <button class="btn primary block mt" data-act="startCreate">Створити персонажа</button>
+    ${d.helpRequested
+    ? `<p class="hint mt">🙋 Ти попросив майстра допомогти. Він може створити персонажа за тебе — персонаж буде твоїм. Або створи сам.</p>
+    <button class="btn block mt" data-act="askMaster" data-cancel="1">Скасувати прохання</button>`
+    : '<button class="btn block mt" data-act="askMaster">🙋 Попросити майстра</button>'}</div>
   ${d.fallen.length ? `<h3 class="sec">☠ Загиблі персонажі</h3>${d.fallen.map((f) => `<div class="card list-item muted"><div class="ava">💀</div><div class="meta"><b>${esc(f.name)}</b>
   <small>${esc(R.CLASSES[f.classId] ? R.CLASSES[f.classId].name : '')} ${f.level} рів.</small></div></div>`).join('')}` : ''}`;
 }
@@ -901,11 +907,13 @@ function featureListHtml(list, opts = {}) {
 }
 
 // ---------- Створення персонажа ----------
-function newWizard() {
+// forPlayer — гравець, за якого (на його прохання) персонажа створює майстер
+function newWizard(forPlayer) {
   return {
+    forUserId: forPlayer ? forPlayer.userId : null, forName: forPlayer ? forPlayer.name : '',
     step: 1, name: '', raceId: '', classId: '', backgroundId: '', alignment: '', level: 1,
     method: 'standard', assign: {}, pb: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
-    rolls: (S.room && S.room.lastRoll) || null, raceChoice: [], skills: [], raceSkills: [], bgSkills: [], expertise: [], text: {}, subclassId: '', choices: {},
+    rolls: (forPlayer ? forPlayer.lastRoll : S.room && S.room.lastRoll) || null, raceChoice: [], skills: [], raceSkills: [], bgSkills: [], expertise: [], text: {}, subclassId: '', choices: {},
     asi: {}, expertiseAt: {}, choicesUp: {}, profPicks: {}, sp: { list: [], pool: '', q: '', lvl: 'all' }, equip: { gold: false, opts: [], picks: {} },
   };
 }
@@ -1020,7 +1028,8 @@ function createHtml() {
   const err = wizStepError(name);
   const titles = { basics: 'Основне', abilities: 'Характеристики', skills: 'Навички', levels: `Розвиток до ${wizLevel()} рівня`, prof: 'Володіння й мови', spells: 'Закляття', equip: 'Спорядження', desc: 'Підсумок' };
   let h = `<div class="top"><h2>Новий персонаж</h2><small class="hint">Крок ${w.step}/${steps.length} · ${titles[name]}</small></div>
-  <div class="steps">${steps.map((_, i) => `<i class="${i < w.step ? 'on' : ''}"></i>`).join('')}</div>`;
+  <div class="steps">${steps.map((_, i) => `<i class="${i < w.step ? 'on' : ''}"></i>`).join('')}</div>
+  ${w.forUserId ? `<div class="card help-for">🙋 Створюєш персонажа для гравця <b>${esc(w.forName)}</b>. Персонаж буде його, а не твоїм.</div>` : ''}`;
   if (name === 'basics') h += wizStep1();
   if (name === 'abilities') h += wizStep2();
   if (name === 'skills') h += wizStep3();
@@ -2029,6 +2038,16 @@ const ACT = {
 
   // --- Створення персонажа ---
   startCreate: () => { S.wiz = newWizard(); go('create'); },
+  askMaster: async ({ cancel }) => {
+    const r = await run(() => api('askMaster', { roomId: roomId(), cancel: !!cancel }), cancel ? 'Прохання скасовано' : '🙋 Майстер отримав прохання');
+    if (r) { S.room.helpRequested = r.helpRequested; render(); }
+  },
+  helpCreate: ({ uid }) => {
+    const p = S.room && S.room.players.find((x) => String(x.userId) === String(uid));
+    if (!p || p.character) { toast('У гравця вже є інший живий персонаж', true); return; }
+    S.wiz = newWizard(p);
+    go('create');
+  },
   wizStep: ({ d }) => {
     const w = S.wiz;
     if (Number(d) > 0) {
@@ -2062,8 +2081,13 @@ const ACT = {
   wizMethod: ({ m }) => { S.wiz.method = m; S.wiz.assign = {}; render(); },
   roll: async () => {
     if (S.wiz.rolls && !(await confirmBox('Перекинути кубики? Майстер побачить обидва кидки в журналі.'))) return;
-    const r = await run(() => api('rollAbilities', { roomId: roomId() }));
-    if (r) { S.wiz.rolls = r.rolls; S.wiz.assign = {}; if (S.room) S.room.lastRoll = r.rolls; render(); }
+    const forUserId = S.wiz.forUserId;
+    const r = await run(() => api('rollAbilities', { roomId: roomId(), forUserId }));
+    if (r) {
+      S.wiz.rolls = r.rolls; S.wiz.assign = {};
+      if (forUserId) { const p = S.room.players.find((x) => x.userId === forUserId); if (p) p.lastRoll = r.rolls; } else if (S.room) S.room.lastRoll = r.rolls;
+      render();
+    }
   },
   pb: ({ a, d }) => {
     const w = S.wiz;
@@ -2092,8 +2116,10 @@ const ACT = {
     const w = S.wiz;
     const bad = wizFirstError(wizSteps().length);
     if (bad) { toast(bad.err, true); if (bad.step !== w.step) { w.step = bad.step; render(); window.scrollTo(0, 0); } return; }
-    const r = await run(() => api('createCharacter', { roomId: roomId(), method: w.method, input: wizInput() }), '🎉 Персонажа створено!');
-    if (r) { S.wiz = null; S.nav.pop(); S.tab = 'sheet'; await loadRoom(); }
+    const forUserId = w.forUserId;
+    const r = await run(() => api('createCharacter', { roomId: roomId(), method: w.method, input: wizInput(), forUserId }),
+      forUserId ? `🎉 Персонажа створено для гравця ${w.forName}` : '🎉 Персонажа створено!');
+    if (r) { S.wiz = null; S.nav.pop(); if (!forUserId) S.tab = 'sheet'; await loadRoom(); }
   },
 
   // --- Хіти й стан ---
