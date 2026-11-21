@@ -29,7 +29,9 @@ export const SKILLS = {
   stealth: ['Непомітність', 'dex'],
   survival: ['Виживання', 'wis'],
 };
-export const SKILL_IDS = Object.keys(SKILLS);
+// У алфавітному порядку української назви
+export const SKILL_IDS = Object.keys(SKILLS).sort((a, b) => SKILLS[a][0].localeCompare(SKILLS[b][0], 'uk'));
+export const sortSkills = (ids) => ids.slice().sort((a, b) => SKILLS[a][0].localeCompare(SKILLS[b][0], 'uk'));
 
 // caster: full | half | pact | none
 export const CLASSES = {

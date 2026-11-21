@@ -230,3 +230,18 @@ details summary { cursor: pointer; color: var(--link); padding: 6px 0; }
 .rules { margin: 6px 0 4px; padding-left: 18px; }
 .rules li { margin: 4px 0; font-size: 14px; }
 .kv dd b { font-weight: 600; }
+/* Скорочення й плашка-підказка */
+.abbr { border-bottom: 1px dotted currentColor; cursor: help; text-decoration: none; }
+.skilln { cursor: help; border-bottom: 1px dotted color-mix(in srgb, var(--text) 35%, transparent); }
+.tip { position: fixed; z-index: 160; background: var(--bg2); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 36px 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 14px; line-height: 1.45; animation: fade .12s; }
+.tip[hidden] { display: none; }
+.tip .tip-t { display: block; font-family: var(--serif); font-size: 16px; margin-bottom: 4px; }
+.tip .tip-b small { font-size: 12px; }
+.tip .tip-x { position: absolute; top: 6px; right: 8px; width: 26px; height: 26px; border-radius: 50%; color: var(--hint); font-size: 15px; }
+.tip .tip-x:hover { background: var(--soft); }
+details.archive summary { list-style: none; display: flex; align-items: center; gap: 8px; color: var(--text); padding: 2px 0; }
+details.archive summary::-webkit-details-marker { display: none; }
+details.archive summary::after { content: '›'; margin-left: auto; color: var(--hint); font-size: 20px; transition: transform .15s; }
+details.archive[open] summary::after { transform: rotate(90deg); }
+details.archive summary b { font-family: var(--serif); font-size: 17px; }

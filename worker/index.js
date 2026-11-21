@@ -558,6 +558,19 @@ async function buildLogTxt(c, room, session) {
   return lines.join('\r\n');
 }
 
+async function archiveRows(c, onlyId) {
+  const rows = await all(c.db, `SELECT ch.id, ch.room_id, ch.alive, ch.sheet, ch.created_at, ch.updated_at, r.name AS room_name, r.deleted AS room_deleted,
+    (SELECT 1 FROM members m WHERE m.room_id = ch.room_id AND m.user_id = ch.user_id) AS is_member
+    FROM characters ch LEFT JOIN rooms r ON r.id = ch.room_id
+    WHERE ch.user_id = ? ${onlyId ? 'AND ch.id = ?' : ''} ORDER BY ch.id DESC`, ...(onlyId ? [c.user.id, onlyId] : [c.user.id]));
+  return rows.map((r) => {
+    const s = JSON.parse(r.sheet);
+    const status = !r.alive ? 'dead' : r.room_deleted ? 'closed' : !r.is_member ? 'left' : 'active';
+    return { id: r.id, roomId: r.room_id, roomName: r.room_name || '—', status, dead: !r.alive, roomClosed: !!r.room_deleted,
+      name: s.name, classId: s.classId, raceId: s.raceId, raceName: s.raceName || '', level: s.level, subclass: s.subclass || '', createdAt: r.created_at, updatedAt: r.updated_at, sheet: s };
+  });
+}
+
 // ---------------- Операції API ----------------
 const OPS = {
   async me(c) {
@@ -573,7 +586,17 @@ const OPS = {
       const s = r.sheet ? JSON.parse(r.sheet) : null;
       return { id: r.id, name: r.name, masterName: r.masterName, character: s ? { name: s.name, classId: s.classId, level: s.level, pendingLevel: s.targetLevel > s.level } : null };
     });
-    return { user: u, botUsername: await botUsername(c.env), masterRooms, playerRooms, maxPlayers: MAX_PLAYERS };
+    const archive = (await archiveRows(c)).map(({ sheet, items, ...rest }) => rest);
+    return { user: u, botUsername: await botUsername(c.env), masterRooms, playerRooms, archive, maxPlayers: MAX_PLAYERS };
+  },
+
+  // Архів: усі персонажі гравця за весь час (лише перегляд)
+  async archiveChar(c, { charId }) {
+    const row = (await archiveRows(c, int(charId, 0, 1e12, 0)))[0];
+    if (!row) fail('Персонажа не знайдено в архіві');
+    const ch = parseChar(await first(c.db, 'SELECT * FROM characters WHERE id = ?', row.id));
+    ch.items = await loadItems(c, [ch.id]);
+    return { character: ch, info: { roomName: row.roomName, roomId: row.roomId, status: row.status, dead: row.dead, createdAt: row.createdAt } };
   },
 
   async setRole(c, { role }) {
@@ -604,11 +627,14 @@ const OPS = {
     await addLog(c, room, `перейменував кімнату: «${room.name}» → «${name}»`);
   },
 
-  async deleteRoom(c, { roomId }) {
+  async deleteRoom(c, { roomId, message }) {
     const room = await requireMaster(c, roomId);
+    const text = str(message, 1500);
+    if (!text) fail('Напиши останнє повідомлення гравцям');
+    await addLog(c, room, `закрив кімнату. Останнє слово: ${text}`);
     await run(c.db, 'UPDATE rooms SET deleted = 1, version = version + 1 WHERE id = ?', room.id);
     const members = await all(c.db, 'SELECT user_id FROM members WHERE room_id = ?', room.id);
-    for (const m of members) notify(c, m.user_id, `🚪 Майстер закрив кімнату «${room.name}».`);
+    for (const m of members) notify(c, m.user_id, `📜 Останнє слово майстра · «${room.name}»\n\n${text}`);
   },
 
   async joinRoom(c, { code }) {
@@ -1169,7 +1195,7 @@ const OPS = {
     const r = await sendDocument(c.env, c.user.id, fname, txt, `📜 Журнал «${room.name}», сесія ${room.session}`);
     await run(c.db, 'UPDATE rooms SET session = session + 1 WHERE id = ?', room.id);
     const members = await all(c.db, 'SELECT user_id FROM members WHERE room_id = ?', room.id);
-    for (const m of members) notify(c, m.user_id, `🏁 Сесію ${room.session} у кімнаті «${room.name}» завершено. До зустрічі!`);
+    for (const m of members) notify(c, m.user_id, `🏁 «${room.name}»\nНа сьогодні подорож завершена... До наступної зустрічі!`);
     return { sent: !!r.ok, session: room.session + 1 };
   },
 };
