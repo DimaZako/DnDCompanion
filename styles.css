@@ -254,3 +254,15 @@ details.archive summary b { font-family: var(--serif); font-size: 17px; }
 .foot a:active { opacity: .7; }
 .foot .foot-q { margin-top: 10px; }
 .foot .hint { font-size: 12px; }
+
+/* Закляття, володіння, попередження */
+.card.notice { border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.card.warnbox { border: 1px solid color-mix(in srgb, #e5a24a 55%, transparent); }
+.card.warnbox p { margin: 4px 0; font-size: 14px; }
+.badge.warn, .warn { color: #e5a24a; }
+.badge.warn { background: color-mix(in srgb, #e5a24a 16%, transparent); }
+details > summary { cursor: pointer; padding: 6px 0; list-style-position: inside; }
+#spList .pick .info-i { margin-left: 6px; }
+.chips.wrap { flex-wrap: wrap; overflow: visible; }
+.chips.wrap .chip { flex: none; }
+.pick.disabled .info-i { pointer-events: auto; }

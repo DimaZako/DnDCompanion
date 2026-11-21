@@ -1,6 +1,7 @@
 // DnD Companion — сервер (Cloudflare Worker + D1)
 // Маршрути: POST /api (Mini App), POST /bot (вебхук Telegram), GET /setup (налаштування бота)
 import * as R from '../shared/rules.js';
+import { CATALOG_BY_ID } from '../data/items.js';
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, first_name TEXT, username TEXT, role TEXT, created_at INTEGER, updated_at INTEGER)`,
@@ -354,6 +355,8 @@ export function sanitizeItem(d) {
   o.charges = str(d.charges, 40);
   o.desc = str(d.desc, 4000);
   o.catalogId = str(d.catalogId, 60);
+  o.cat = R.ITEM_CATS[d.cat] ? d.cat : '';
+  o.kind = d.type === 'weapon' && R.WEAPON_PROF[d.kind] && !['simple', 'martial'].includes(d.kind) ? d.kind : '';
   for (const k of Object.keys(o)) if (o[k] === '' || o[k] === null || o[k] === false || (k === 'bonus' && o[k] === 0) || (k === 'acBonus' && o[k] === 0)) delete o[k];
   o.name = str(d.name, 80); o.rarity = o.rarity || 'common'; o.type = o.type || 'other';
   if (d.consumable === true || d.consumable === false) o.consumable = d.consumable;
@@ -364,6 +367,12 @@ function sanitizeSpells(list) {
   if (!Array.isArray(list)) fail('Невірний список заклять');
   if (list.length > 300) fail('Забагато заклять');
   return list.map((s) => {
+    if (s.sid && R.SPELLS[s.sid]) {
+      const sp = R.SPELLS[s.sid];
+      const e = { id: str(s.id, 24) || Math.random().toString(36).slice(2, 10), sid: sp.id, pool: str(s.pool, 20) || 'extra', name: sp.name, level: sp.level, prepared: !!s.prepared };
+      if (s.by === 'm') e.by = 'm';
+      return e;
+    }
     const name = str(s.name, 80);
     if (!name) fail('У закляття має бути назва');
     return {
@@ -445,7 +454,12 @@ export function sanitizeSheetByMaster(input, old) {
     if (Array.isArray(i.spell.spells)) s.spell.spells = sanitizeSpells(i.spell.spells);
   }
   if (i.money) s.money = sanitizeMoney(i.money);
+  if (i.prof && typeof i.prof === 'object') s.prof = sanitizeProf(i.prof);
   return s;
+}
+function sanitizeProf(p) {
+  const pick = (arr, dict) => [...new Set((Array.isArray(arr) ? arr : []).map(String))].filter((x) => dict[x]);
+  return { armor: pick(p.armor, R.ARMOR_PROF), weapons: pick(p.weapons, R.WEAPON_PROF), tools: pick(p.tools, R.TOOLS), languages: pick(p.languages, R.LANGUAGES) };
 }
 
 // Людиночитний перелік змін листа
@@ -493,6 +507,15 @@ export function describeSheetDiff(a, b) {
   }
   out.push(...spellsDiff(a.spell.spells, b.spell.spells));
   cmp('Бонус пасивної уважності', a.passiveBonus || 0, b.passiveBonus || 0);
+  if (b.prof) {
+    const pa = R.profOf(a); const pb = R.profOf(b);
+    for (const [k, dict, label] of [['armor', R.ARMOR_PROF, 'обладунки'], ['weapons', R.WEAPON_PROF, 'зброя'], ['tools', R.TOOLS, 'інструменти'], ['languages', R.LANGUAGES, 'мови']]) {
+      const add = pb[k].filter((x) => !pa[k].includes(x)).map((x) => dict[x]);
+      const del = pa[k].filter((x) => !pb[k].includes(x)).map((x) => dict[x]);
+      if (add.length) out.push(`Володіння (${label}): + ${add.join(', ')}`);
+      if (del.length) out.push(`Володіння (${label}): − ${del.join(', ')}`);
+    }
+  }
   const resB = R.sheetResources(b);
   for (const r of resB) {
     const x = Math.min(r.max, Number((a.resUsed || {})[r.id] || 0)); const y = r.used;
@@ -530,6 +553,23 @@ async function addItemToChar(c, charId, data, qty) {
   }
   const r = await run(c.db, 'INSERT INTO items (char_id, data, qty, equipped, attuned, created_at) VALUES (?, ?, ?, 0, 0, ?)', charId, key, qty, now());
   return r.meta && r.meta.last_row_id;
+}
+
+// Видача стартових предметів: обладунок, щит і зброя одразу екіпіровані (якщо є володіння)
+async function giveStartItems(c, charId, sheet, items) {
+  let armorOn = false;
+  const stmts = [];
+  for (const [id, qty] of items) {
+    const cat = CATALOG_BY_ID[id];
+    if (!cat) continue;
+    const data = sanitizeItem({ ...cat });
+    let eq = 0;
+    if (data.type === 'armor' && !armorOn && R.armorProficient(sheet, data) !== false) { eq = 1; armorOn = true; }
+    if (data.type === 'shield' && R.armorProficient(sheet, data) !== false) eq = 1;
+    if (data.type === 'weapon') eq = 1;
+    stmts.push(q(c.db, 'INSERT INTO items (char_id, data, qty, equipped, attuned, created_at) VALUES (?, ?, ?, ?, 0, ?)', charId, JSON.stringify(data), qty, eq, now()));
+  }
+  if (stmts.length) await c.db.batch(stmts);
 }
 
 async function decItem(c, item, n) {
@@ -772,12 +812,32 @@ const OPS = {
     if (level > maxLv) fail(maxLv > 1 ? `У цій кімнаті можна почати максимум з ${maxLv} рівня` : 'У цій кімнаті персонажі починають з 1 рівня');
     const { errors, sheet } = R.buildCharacter({ ...(input || {}), level });
     if (errors.length) fail(errors.join('\n'));
+    // Стартове спорядження: варіанти класу + речі передісторії, або золото кидком
+    let items = [];
+    let equipNote = '';
+    if (input && input.equip) {
+      const eq = R.resolveEquipment(sheet.classId, sheet.backgroundId, input.equip, input.profPicks || {}, sheet.prof);
+      if (eq.errors.length) fail(eq.errors.join('\n'));
+      if (eq.gold) {
+        const [n, mul] = R.CLASS_EQUIP[sheet.classId].gold;
+        const rolls = Array.from({ length: n }, () => R.rollDie(4));
+        const gp = rolls.reduce((a, b) => a + b, 0) * mul;
+        sheet.money.gp = (Number(sheet.money.gp) || 0) + gp;
+        equipNote = `золото замість спорядження: ${n}к4${mul > 1 ? ` × ${mul}` : ''} = ${gp} ЗМ (${rolls.join('+')})`;
+      } else {
+        sheet.money.gp = (Number(sheet.money.gp) || 0) + eq.gp;
+        items = eq.items;
+        equipNote = `стартове спорядження: ${items.length} предметів, ${eq.gp} ЗМ`;
+      }
+    }
     const t = now();
     const r = await run(c.db, 'INSERT INTO characters (room_id, user_id, alive, sheet, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)', room.id, c.user.id, JSON.stringify(sheet), t, t);
+    const newId = r.meta && r.meta.last_row_id;
+    if (items.length) await giveStartItems(c, newId, sheet, items);
     const methodName = { standard: 'стандартний набір', pointbuy: 'купівля очками', roll: 'кидок кубиків' }[method];
-    await addLog(c, room, `створив персонажа ${sheet.name}: ${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}${sheet.subclass ? ` (${sheet.subclass})` : ''} ${level} рів. (${methodName}; ${R.ABILITIES.map((a) => `${R.ABILITY_SHORT[a]} ${sheet.abilities[a]}`).join(', ')})`);
+    await addLog(c, room, `створив персонажа ${sheet.name}: ${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}${sheet.subclass ? ` (${sheet.subclass})` : ''} ${level} рів. (${methodName}; ${R.ABILITIES.map((a) => `${R.ABILITY_SHORT[a]} ${sheet.abilities[a]}`).join(', ')})${equipNote ? `; ${equipNote}` : ''}`);
     notify(c, room.master_id, `🧝 ${c.user.name} створив персонажа «${sheet.name}» (${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}, ${level} рів.) у кімнаті «${room.name}».`);
-    return { charId: r.meta && r.meta.last_row_id };
+    return { charId: newId };
   },
 
   // ----- Гравець -----
@@ -860,15 +920,27 @@ const OPS = {
     return { ok: true };
   },
 
+  // Закляття: гравець — за правилами (вільні місця, заміна після підвищення, підготовка після довгого відпочинку); майстер — вільно
   async spells(c, { charId, spells }) {
     const { ch, room, isMaster } = await charAccess(c, charId, { owner: true, master: true });
-    const old = JSON.parse(JSON.stringify(ch.sheet));
-    ch.sheet.spell.spells = sanitizeSpells(spells);
-    const diff = describeSheetDiff(old, ch.sheet);
-    if (!diff.length) return { ok: true };
+    const s = ch.sheet;
+    const old = JSON.parse(JSON.stringify(s));
+    if (!Array.isArray(spells) || spells.length > 300) fail('Невірний список заклять');
+    const r = R.checkSpells(s, s.spell.spells || [], spells, isMaster ? 'master' : 'player');
+    if (r.errors.length) fail(r.errors.join('\n'));
+    s.spell.spells = sanitizeSpells(r.list);
+    if (!isMaster) {
+      if (r.swapsUsed) s.spell.swaps = Math.max(0, (Number(s.spell.swaps) || 0) - r.swapsUsed);
+      if (r.prepChanged) s.spell.prepOpen = false;
+    }
+    const diff = describeSheetDiff(old, s);
+    if (!diff.length && JSON.stringify(old.spell) === JSON.stringify(s.spell)) return { ok: true };
     await saveSheet(c, ch);
-    await addLog(c, room, `${ch.sheet.name}: ${diff.join('; ')}`, isMaster ? undefined : charActor(c, ch));
-    if (isMaster) notify(c, ch.userId, `📜 Майстер змінив закляття твого персонажа ${ch.sheet.name}: ${diff.join('; ')}`);
+    if (diff.length) {
+      await addLog(c, room, `${s.name}: ${diff.join('; ')}`, isMaster ? undefined : charActor(c, ch));
+      if (isMaster) notify(c, ch.userId, `📜 Майстер змінив закляття твого персонажа ${s.name}: ${diff.join('; ')}`);
+      else notify(c, room.master_id, `📖 ${s.name}: ${diff.join('; ')}`);
+    }
     return { ok: true };
   },
 
@@ -1002,6 +1074,10 @@ const OPS = {
     s.hp.cur = Math.min(s.hp.max, s.hp.cur + gain + Math.max(0, retro));
     parts.unshift(`+${gain + retro} ХП (${hpMethod === 'roll' ? `кидок к${cls.hd}: ${die}` : `середнє к${cls.hd}: ${die}`}${conMod ? `, СТА ${R.fmtMod(conMod)}` : ''}${retro ? `, перерахунок СТА ${R.fmtMod(retro)}` : ''})`);
     s.level = newLevel;
+    if (R.canSwapSpell(s)) s.spell.swaps = 1;
+    if (R.isPreparedCaster(s)) s.spell.prepOpen = true;
+    const freeSpells = R.spellPoolUsage(s, s.spell.spells).reduce((t, p) => t + Math.max(0, p.count - p.used), 0);
+    if (freeSpells) parts.push(`можна обрати нові закляття (${freeSpells})`);
     const newFeatures = s.features.slice(featuresBefore).filter((x) => x.lvl === newLevel).map((x) => x.name);
     await saveSheet(c, ch);
     const msg = `підвищив рівень до ${newLevel}: ${parts.join('; ')}${newFeatures.length ? `. Нові вміння: ${newFeatures.join(', ')}` : ''}`;
@@ -1163,7 +1239,7 @@ const OPS = {
       await saveSheet(c, ch);
       const left = ch.sheet.level - (ch.sheet.hitDiceUsed || 0);
       notify(c, ch.userId, kind === 'long'
-        ? `🌙 Довгий відпочинок: ${ch.sheet.name} — хіти, комірки заклять і ресурси відновлено.`
+        ? `🌙 Довгий відпочинок: ${ch.sheet.name} — хіти, комірки заклять і ресурси відновлено.${R.isPreparedCaster(ch.sheet) ? ' Можеш змінити підготовлені закляття.' : ''}`
         : `☕ Короткий відпочинок! ${res.length ? `Відновлено: ${res.join(', ')}. ` : ''}Можеш витратити кості хітів у застосунку (доступно ${left}).`);
     }
     await addLog(c, room, `${kind === 'long' ? '🌙 довгий' : '☕ короткий'} відпочинок: ${chars.map((x) => x.sheet.name).join(', ')}`);

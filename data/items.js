@@ -151,6 +151,67 @@ const GEAR = [
   ['gem_1000', 'Самоцвіт (1000 ЗМ)', '1000 ЗМ', 0, 'treasure', 'Наприклад, смарагд, опал або сапфір.'],
   ['art_25', 'Витвір мистецтва (25 ЗМ)', '25 ЗМ', 0, 'treasure', 'Срібна чаша, різьблена статуетка тощо.'],
   ['art_250', 'Витвір мистецтва (250 ЗМ)', '250 ЗМ', 0, 'treasure', 'Золотий перстень із самоцвітом, оксамитова маска тощо.'],
+  // Поштучні боєприпаси
+  ['arrow', 'Стріла', '5 ММ', 0.05, 'ammo', 'Боєприпас для луків.'],
+  ['bolt', 'Арбалетний болт', '5 ММ', 0.075, 'ammo', 'Боєприпас для арбалетів.'],
+  ['sling_bullet', 'Куля для пращі', '2 ММ', 0.075, 'ammo', 'Боєприпас для пращі.'],
+  ['needle', 'Голка для духової трубки', '2 ММ', 0.02, 'ammo', 'Боєприпас для духової трубки.'],
+  // Інструменти ремісників
+  ['brewers_supplies', 'Приладдя пивовара', '20 ЗМ', 9, 'tool', 'Інструменти ремісника.'],
+  ['calligraphers_supplies', 'Приладдя каліграфа', '10 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  ['carpenters_tools', 'Інструменти теслі', '8 ЗМ', 6, 'tool', 'Інструменти ремісника.'],
+  ['cartographers_tools', 'Інструменти картографа', '15 ЗМ', 6, 'tool', 'Інструменти ремісника.'],
+  ['cobblers_tools', 'Інструменти шевця', '5 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  ['cooks_utensils', 'Кухарське начиння', '1 ЗМ', 8, 'tool', 'Інструменти ремісника.'],
+  ['glassblowers_tools', 'Інструменти склодува', '30 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  ['jewelers_tools', 'Інструменти ювеліра', '25 ЗМ', 2, 'tool', 'Інструменти ремісника.'],
+  ['leatherworkers_tools', 'Інструменти кожум’яки', '5 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  ['masons_tools', 'Інструменти муляра', '10 ЗМ', 8, 'tool', 'Інструменти ремісника.'],
+  ['painters_supplies', 'Приладдя художника', '10 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  ['potters_tools', 'Інструменти гончаря', '10 ЗМ', 3, 'tool', 'Інструменти ремісника.'],
+  ['tinkers_tools', 'Інструменти лудильника', '50 ЗМ', 10, 'tool', 'Інструменти ремісника: лагодження й дрібні механізми.'],
+  ['weavers_tools', 'Інструменти ткача', '1 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  ['woodcarvers_tools', 'Інструменти різьбяра', '1 ЗМ', 5, 'tool', 'Інструменти ремісника.'],
+  // Гральні набори й музичні інструменти
+  ['dragonchess_set', 'Драконячі шахи', '1 ЗМ', 0.5, 'tool', 'Гральний набір.'],
+  ['three_dragon_ante', 'Колода «Три дракони»', '1 ЗМ', 0, 'tool', 'Гральний набір.'],
+  ['bagpipes', 'Волинка', '30 ЗМ', 6, 'tool', 'Музичний інструмент.'],
+  ['dulcimer', 'Цимбали', '25 ЗМ', 10, 'tool', 'Музичний інструмент.'],
+  ['lyre', 'Ліра', '30 ЗМ', 2, 'tool', 'Музичний інструмент.'],
+  ['horn', 'Ріг', '3 ЗМ', 2, 'tool', 'Музичний інструмент.'],
+  ['pan_flute', 'Сопілка Пана', '12 ЗМ', 2, 'tool', 'Музичний інструмент.'],
+  ['shawm', 'Шалмей', '2 ЗМ', 1, 'tool', 'Музичний інструмент.'],
+  ['viol', 'Віола', '30 ЗМ', 1, 'tool', 'Музичний інструмент.'],
+  // Вміст наборів і речі передісторій
+  ['string', 'Нитка (10 фт)', '', 0, 'gear', ''],
+  ['bell', 'Дзвіночок', '1 ЗМ', 0, 'gear', ''],
+  ['alms_box', 'Скринька для пожертв', '', 1, 'gear', ''],
+  ['incense', 'Брикет ладану', '', 0, 'gear', '', 'common'],
+  ['censer', 'Кадило', '', 1, 'gear', ''],
+  ['vestments', 'Ризи', '', 4, 'gear', ''],
+  ['sand_bag', 'Мішечок піску', '', 1, 'gear', ''],
+  ['knife_small', 'Ножик', '', 0.5, 'gear', 'Невеликий ніж для побуту (не зброя).'],
+  ['chest', 'Скриня', '5 ЗМ', 25, 'gear', 'Вміщує 12 куб. фт або 300 фнт.'],
+  ['case_map', 'Футляр для карт і сувоїв', '1 ЗМ', 1, 'gear', ''],
+  ['sealing_wax', 'Сургуч', '5 СМ', 0, 'gear', ''],
+  ['soap', 'Мило', '2 ММ', 0, 'gear', ''],
+  ['costume', 'Костюм', '5 ЗМ', 4, 'gear', 'Сценічний костюм.'],
+  ['quiver', 'Сагайдак', '1 ЗМ', 1, 'gear', 'Вміщує 20 стріл.'],
+  ['iron_pot', 'Залізний казан', '2 ЗМ', 10, 'gear', ''],
+  ['prayer_book', 'Молитовник', '', 5, 'gear', 'Або молитовне колесо.'],
+  ['signet_ring', 'Перстень-печатка', '5 ЗМ', 0, 'gear', ''],
+  ['scroll_pedigree', 'Сувій родоводу', '', 0, 'gear', ''],
+  ['insignia', 'Знак розрізнення', '', 0, 'gear', 'Відзнака військового звання.'],
+  ['trophy', 'Трофей', '', 0, 'gear', 'Пам’ятка про переможеного ворога чи вбитого звіра.'],
+  ['lucky_charm', 'Талісман на удачу', '', 0, 'gear', ''],
+  ['letter', 'Лист', '', 0, 'gear', ''],
+  ['map_city', 'Мапа рідного міста', '', 0, 'gear', ''],
+  ['pet_mouse', 'Ручна мишка', '', 0, 'gear', ''],
+  ['token_parents', 'Пам’ятка від батьків', '', 0, 'gear', ''],
+  ['admirer_favor', 'Подарунок шанувальника', '', 0, 'gear', 'Любовний лист, локон волосся чи дрібничка.'],
+  ['con_tools', 'Знаряддя шахрая', '', 1, 'gear', 'Пляшечки з кольоровою рідиною, налиті кістки, мічені карти або перстень вигаданого герцога.'],
+  ['winter_blanket', 'Зимова ковдра', '', 3, 'gear', ''],
+  ['scroll_case_notes', 'Футляр із нотатками', '', 1, 'gear', 'Нотатки про твої дослідження чи молитви.'],
 ];
 
 // [id, назва, тип, рідкість (c/u/r/v/l), налаштування, опис, додаткові поля]
@@ -285,7 +346,7 @@ const MAGIC = [
   ['wand_paralysis', 'Паличка паралічу', 'wand', 'r', 'так (заклинач)', '7 зарядів: промінь, рятівний Статури СК 15 або параліч на 1 хвилину.'],
   ['wand_wonder', 'Паличка чудес', 'wand', 'r', 'так (заклинач)', '7 зарядів: випадковий магічний ефект за таблицею майстра.'],
   ['wand_binding', 'Паличка скування', 'wand', 'r', 'так (заклинач)', '7 зарядів: «Утримання чудовиська» або «Утримання особи».'],
-  ['wand_polymorph', 'Паличка перевтілення', 'wand', 'v', 'так (заклинач)', '7 зарядів: «Перевтілення» (СК 15).'],
+  ['wand_polymorph', 'Паличка перевтілення', 'wand', 'v', 'так (заклинач)', '7 зарядів: «Поліморф» (СК 15).'],
   ['staff_python', 'Посох пітона', 'staff', 'u', 'так (жрець, друїд, чаклун)', 'Дією кинь на землю — перетворюється на гігантську отруйну змію під твоїм керуванням.'],
   ['staff_charming', 'Посох зачарування', 'staff', 'r', 'так (бард, жрець, друїд, чародій, чаклун, маг)', '10 зарядів: «Зачарування особи», «Наказ», «Розуміння мов».'],
   ['staff_healing', 'Посох лікування', 'staff', 'r', 'так (бард, жрець, друїд)', '10 зарядів: «Лікування ран», «Масове лікування ран», «Мале відновлення».'],
@@ -375,7 +436,7 @@ const MAGIC = [
 ];
 
 const CONSUMABLE_GEAR = new Set(['acid', 'alchemists_fire', 'ball_bearings', 'candle', 'chalk', 'healers_kit', 'holy_water', 'ink', 'oil',
-  'paper', 'parchment', 'perfume', 'piton', 'poison_basic', 'torch']);
+  'paper', 'parchment', 'perfume', 'piton', 'poison_basic', 'torch', 'incense', 'sealing_wax', 'soap']);
 const WEAPON_BY_ID = Object.fromEntries(WEAPONS.map((w) => [w[0], w]));
 function baseWeapon(id) {
   const w = WEAPON_BY_ID[id];
@@ -383,13 +444,25 @@ function baseWeapon(id) {
 }
 
 const R_MAP = { c: 'common', u: 'uncommon', r: 'rare', v: 'very_rare', l: 'legendary' };
+const W_CAT = { 'Проста ближнього бою': 'simple_melee', 'Проста дальнього бою': 'simple_ranged', 'Військова ближнього бою': 'martial_melee', 'Військова дальнього бою': 'martial_ranged' };
+const A_CAT = { Легкий: 'light', Середній: 'medium', Важкий: 'heavy' };
+// Категорія й вид зброї / обладунку за id каталогу
+export const WEAPON_INFO = Object.fromEntries(WEAPONS.map((w) => [w[0], { name: w[1], cat: W_CAT[w[7]] }]));
+export const ARMOR_INFO = Object.fromEntries(ARMOR.map((a) => [a[0], { name: a[1], cat: A_CAT[a[8]] }]));
+// Магічні предмети без базового id
+const MAGIC_KIND = { longsword_1: 'longsword', dagger_1: 'dagger', longbow_1: 'longbow', javelin_lightning: 'javelin', trident_fish: 'trident', flame_tongue: 'longsword',
+  sun_blade: 'longsword', sword_life_stealing: 'longsword', sword_wounding: 'longsword', mace_disruption: 'mace', mace_smiting: 'mace', mace_terror: 'mace',
+  dagger_venom: 'dagger', berserker_axe: 'battleaxe', frost_brand: 'longsword', dancing_sword: 'longsword', sword_sharpness: 'longsword', nine_lives_stealer: 'longsword',
+  scimitar_speed: 'scimitar', dwarven_thrower: 'warhammer', oathbow: 'longbow', luck_blade: 'longsword', defender: 'longsword', holy_avenger: 'longsword',
+  vorpal_sword: 'longsword', hammer_thunderbolts: 'maul', dragon_slayer: 'longsword', giant_slayer: 'greataxe' };
+const MAGIC_ARMOR_CAT = { elven_chain: 'light', dragon_scale_mail: 'medium', dwarven_plate: 'heavy', armor_invulnerability: 'heavy', plate_etherealness: 'heavy' };
 
 export const CATALOG = [
   ...WEAPONS.map(([id, name, cost, damage, dmgType, weight, props, cat, ranged]) => ({
-    catalogId: id, name, type: 'weapon', rarity: 'common', cost, damage, dmgType, weight, props, ranged: !!ranged, group: cat, desc: '',
+    catalogId: id, name, type: 'weapon', rarity: 'common', cost, damage, dmgType, weight, props, ranged: !!ranged, group: cat, desc: '', cat: W_CAT[cat], kind: id,
   })),
   ...ARMOR.map(([id, name, cost, ac, dexMax, strReq, stealthDis, weight, cat]) => ({
-    catalogId: id, name, type: 'armor', rarity: 'common', cost, ac, dexMax, strReq, stealthDis: !!stealthDis, weight, group: `${cat} обладунок`,
+    catalogId: id, name, type: 'armor', rarity: 'common', cost, ac, dexMax, strReq, stealthDis: !!stealthDis, weight, group: `${cat} обладунок`, cat: A_CAT[cat],
     desc: `КЗ ${ac}${dexMax == null ? ' + модифікатор СПР' : dexMax ? ` + модифікатор СПР (макс. ${dexMax})` : ''}.${strReq ? ` Потрібна Сила ${strReq}.` : ''}${stealthDis ? ' Перешкода на Непомітність.' : ''}`,
   })),
   { catalogId: 'shield', name: 'Щит', type: 'shield', rarity: 'common', cost: '10 ЗМ', ac: 2, weight: 6, group: 'Щит', desc: '+2 до КЗ.' },
@@ -398,9 +471,12 @@ export const CATALOG = [
   })),
   ...MAGIC.map(([id, name, type, r, attune, desc, extra]) => {
     const { base, ...rest } = extra || {};
-    return { catalogId: id, name, type, rarity: R_MAP[r], attune, desc, group: 'Магічні предмети', ...(base ? baseWeapon(base) : {}), ...rest };
+    const kind = type === 'weapon' ? base || MAGIC_KIND[id] : null;
+    const cat = kind ? WEAPON_INFO[kind].cat : type === 'armor' ? MAGIC_ARMOR_CAT[id] : null;
+    return { catalogId: id, name, type, rarity: R_MAP[r], attune, desc, group: 'Магічні предмети', ...(base ? baseWeapon(base) : {}), ...rest, ...(kind ? { kind } : {}), ...(cat ? { cat } : {}) };
   }),
 ];
 
 // Базова зброя для форми видачі (шкода, тип, властивості)
-export const BASE_WEAPONS = WEAPONS.map(([id, name]) => ({ id, name, ...baseWeapon(id) }));
+export const BASE_WEAPONS = WEAPONS.map(([id, name]) => ({ id, name, ...baseWeapon(id), cat: WEAPON_INFO[id].cat, kind: id }));
+export const CATALOG_BY_ID = Object.fromEntries(CATALOG.map((x) => [x.catalogId, x]));

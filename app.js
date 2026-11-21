@@ -370,6 +370,12 @@ const VIEWS = {
   archiveChar: () => (S.archive ? charHtml(S.archive.character, false) : loadingHtml()),
   catalog: () => catalogHtml(),
   editSheet: () => editSheetHtml(),
+  spellPick: () => {
+    const ch = currentChar();
+    if (!ch || !S.pick) return loadingHtml();
+    return `<div class="top"><h2>📖 Закляття</h2><small class="hint">${esc(ch.sheet.name)} · ${esc(className(ch.sheet))} ${ch.sheet.level} рів.</small></div>
+      ${spellPickerHtml()}<div class="btns mt2"><button class="btn primary block" data-act="spSave">💾 Зберегти</button></div>`;
+  },
   log: () => logHtml(),
 };
 
@@ -494,10 +500,17 @@ function sheetTab(ch, dv) {
     .sort((a, b) => Number(b.it.equipped) - Number(a.it.equipped));
   h += `<div class="lines"><h3>Атаки</h3>${weapons.length ? weapons.map(({ it, d }) => {
     const w = R.weaponAttack(s, d);
-    return `<div class="ln rc-${esc(d.rarity)}" data-act="itemModal" data-id="${it.id}" style="cursor:pointer"><span class="grow"><span class="rname">${esc(d.name)}</span>${it.equipped ? ' <span class="badge">в руках</span>' : ''}
+    return `<div class="ln rc-${esc(d.rarity)}" data-act="itemModal" data-id="${it.id}" style="cursor:pointer"><span class="grow"><span class="rname">${esc(d.name)}</span>${it.equipped ? ' <span class="badge">в руках</span>' : ''}${w.noProf ? ' <span class="badge warn">без володіння</span>' : ''}
     ${d.damage2 ? `<br><small>${esc(d.damage2)}</small>` : ''}</span><span class="v">${fm(w.hit)} · ${d.damage ? abbrify(w.dmg) : 'шкода не вказана'}</span></div>`;
   }).join('') : '<div class="ln hint">Немає зброї в інвентарі</div>'}</div>`;
-  h += textSection(s, 'proficiencies');
+  const badArmor = (ch.items || []).filter((it) => it.equipped && R.armorProficient(s, it.data) === false);
+  const heavy = (ch.items || []).find((it) => it.equipped && it.data.type === 'armor' && it.data.strReq && s.abilities.str < it.data.strReq);
+  if (badArmor.length || heavy) {
+    h += `<div class="card warnbox">${badArmor.map((it) => `<p>⚠️ Немає володіння: <b>${esc(it.data.name)}</b>. Перешкода на перевірки, рятівні кидки й атаки з СИЛ або СПР, не можна творити закляття.</p>`).join('')}
+      ${heavy ? `<p>⚠️ <b>${esc(heavy.data.name)}</b>: потрібна Сила ${heavy.data.strReq} — швидкість −10 фт.</p>` : ''}</div>`;
+  }
+  h += `<div class="lines"><h3>Володіння та мови</h3>${profLinesHtml(R.profOf(s))}</div>`;
+  h += textSection(s, 'proficiencies', 'Нотатки до володінь');
   return h;
 }
 
@@ -542,16 +555,7 @@ function spellsTab(ch, dv, M) {
       <span class="v hint">${max - (used[i] || 0)}/${max}</span></div>` : '')).join('')}
       <div class="ln"><span class="hint">Натисни на комірку, щоб витратити. Відновлюються на відпочинку.</span></div></div>`;
   }
-  const list = s.spell.spells || [];
-  for (let lvl = 0; lvl <= 9; lvl++) {
-    const sp = list.filter((x) => x.level === lvl);
-    if (!sp.length) continue;
-    h += `<div class="lines"><h3>${lvl === 0 ? 'Замовляння' : `${lvl} коло`}</h3>${sp.map((x) => `<div class="ln">
-      ${lvl ? `<button class="dot ${x.prepared ? 'p' : ''}" data-act="togglePrep" data-id="${esc(x.id)}" title="Підготовлено"></button>` : '<span class="dot p"></span>'}
-      <span class="grow" data-act="spellModal" data-id="${esc(x.id)}" style="cursor:pointer"><b>${esc(x.name)}</b>${x.conc ? ` <span class="badge">${ab('К')}</span>` : ''}${x.ritual ? ` <span class="badge">${ab('Р')}</span>` : ''}
-      <br><small>${esc([x.school, x.time, x.range].filter(Boolean).join(' · '))}</small></span></div>`).join('')}</div>`;
-  }
-  if (!isRO()) h += `<div class="btns"><button class="btn" data-act="spellForm">＋ ${caster ? 'Закляття' : 'Закляття (расове чи від предмета)'}</button></div>`;
+  h += spellsListHtml(s, M);
   // Вміння та риси
   const feats = Array.isArray(s.features) ? s.features.map((x, i) => ({ ...x, _i: i })) : null;
   h += '<div class="lines"><div class="row"><h3 class="grow">Вміння та риси</h3>';
@@ -571,6 +575,141 @@ function spellsTab(ch, dv, M) {
   h += '</div>';
   h += textSection(s, 'features', 'Нотатки до вмінь');
   return h;
+}
+
+// Закляття персонажа у вкладці «Вміння»
+function spellsListHtml(s, M) {
+  let h = '';
+  const plan = R.spellPlan(s);
+  const list = s.spell.spells || [];
+  const usage = R.spellPoolUsage(s, list);
+  const free = usage.reduce((t, p) => t + Math.max(0, p.count - p.used), 0);
+  if (!isRO()) {
+    if (M) h += '<div class="btns"><button class="btn" data-act="spellPick">📖 Закляття персонажа</button><button class="btn" data-act="spellForm">＋ Власне закляття</button></div>';
+    else if (plan.pools.length || list.length) {
+      const bits = [];
+      if (free) bits.push(`вільних місць: ${free}`);
+      if (plan.swaps && plan.canSwap) bits.push('можна замінити одне відоме');
+      if (plan.prep && plan.prepOpen) bits.push('можна змінити підготовку');
+      h += bits.length ? `<div class="card notice"><b>📖 Закляття</b><p class="hint" style="margin:4px 0 8px">${esc(bits.join(' · '))}</p><button class="btn primary block" data-act="spellPick">Обрати закляття</button></div>`
+        : '<div class="btns"><button class="btn" data-act="spellPick">📖 Мої закляття</button></div>';
+    }
+  }
+  const prepCaster = plan.prep && plan.prep.from === 'list';
+  const rows = [
+    ...plan.always.map((x) => ({ sid: x.sid, name: R.SPELLS[x.sid].name, level: R.SPELLS[x.sid].level, badge: x.src, prepared: true, fixed: true })),
+    ...list.map((e) => ({ ...e, badge: e.by === 'm' ? 'від майстра' : POOL_BADGE[e.pool] || (e.sid ? '' : 'власне') })),
+  ];
+  for (let lvl = 0; lvl <= 9; lvl++) {
+    const sp = rows.filter((x) => x.level === lvl).sort((a, b) => a.name.localeCompare(b.name, 'uk'));
+    if (!sp.length) continue;
+    h += `<div class="lines"><h3>${lvl === 0 ? 'Замовляння' : `${lvl} коло`}</h3>${sp.map((x) => {
+      const d = x.sid ? R.SPELLS[x.sid] : x;
+      const ready = lvl === 0 || x.fixed || !plan.prep || x.prepared || prepCaster;
+      return `<div class="ln" data-act="spellModal" data-id="${esc(x.id || '')}" data-sid="${esc(x.sid || '')}" style="cursor:pointer">
+        <span class="dot ${ready ? 'p' : ''}" title="${ready ? 'Підготовлено' : 'Не підготовлено'}"></span>
+        <span class="grow"><b>${esc(x.name)}</b>${d.conc ? ` <span class="badge">${ab('К')}</span>` : ''}${d.ritual ? ` <span class="badge">${ab('Р')}</span>` : ''}${x.badge ? ` <span class="badge">${esc(x.badge)}</span>` : ''}
+        <br><small>${esc([d.school, d.time, d.range].filter(Boolean).join(' · '))}</small></span></div>`;
+    }).join('')}</div>`;
+  }
+  if (plan.prep && plan.prep.from === 'book') h += '<p class="hint center">● підготовлено · ○ лише в книзі заклять</p>';
+  return h;
+}
+const POOL_BADGE = { raceCantrip: 'раса', bonusCantrip: 'підклас', tome: 'книга тіней', miCantrips: 'ініціат магії', miSpell: 'ініціат магії', loreSecrets: 'таємниці',
+  arcanum6: 'арканум', arcanum7: 'арканум', arcanum8: 'арканум', arcanum9: 'арканум' };
+
+// ---------- Вибір заклять (екран персонажа й крок майстра створення) ----------
+function pickCtx() {
+  if (cur().view === 'create') return { st: S.wiz.sp, sheet: wizPreview(), mode: 'create', orig: [], bind: 'wiz.sp.q' };
+  const ch = currentChar();
+  return { st: S.pick, sheet: ch ? ch.sheet : null, mode: S.pick.mode, orig: S.pick.orig, bind: 'pick.q' };
+}
+// Чи можна прибрати запис (так само перевіряє сервер)
+function canDropSpell(ctx, e, plan) {
+  if (ctx.mode === 'master' || ctx.mode === 'create') return true;
+  const old = ctx.orig.find((x) => x.id === e.id);
+  if (!old) return true;
+  if (!old.sid || old.by === 'm') return false;
+  if (old.pool === 'prep') return plan.prepOpen;
+  if (old.pool === 'known') {
+    const dropped = ctx.orig.filter((x) => x.pool === 'known' && x.sid && x.by !== 'm' && !ctx.st.list.some((y) => y.id === x.id)).length;
+    return dropped < plan.swaps;
+  }
+  return false;
+}
+const spellMeta = (sp) => [sp.level ? `${sp.level} коло` : 'замовляння', sp.school, sp.conc ? 'концентрація' : '', sp.ritual ? 'ритуал' : ''].filter(Boolean).join(' · ');
+function pickPools(ctx, plan) {
+  const list = ctx.st.list;
+  const tabs = plan.pools.map((p) => ({ ...p, used: list.filter((e) => e.sid && e.by !== 'm' && e.pool === p.id).length }));
+  if (plan.prep && plan.prep.from === 'book') tabs.push({ id: '_prep', name: 'Підготовка', count: plan.prep.max, used: list.filter((e) => e.prepared && e.level > 0).length });
+  if (ctx.mode === 'master') tabs.push({ id: 'extra', name: 'Будь-яке', count: 0, lists: Object.keys(R.SPELL_LIST_NAMES), min: 0, max: 9, any: true });
+  return tabs;
+}
+function spellPickerHtml() {
+  const ctx = pickCtx();
+  const { st, sheet } = ctx;
+  if (!sheet) return loadingHtml();
+  const plan = R.spellPlan(sheet);
+  const tabs = pickPools(ctx, plan);
+  if (!tabs.length) return '<div class="card"><p class="hint">Персонаж поки не творить закляття.</p></div>';
+  if (!tabs.some((t) => t.id === st.pool)) st.pool = tabs[0].id;
+  let h = `<div class="chips wrap">${tabs.map((t) => `<button class="chip ${st.pool === t.id ? 'on' : ''}" data-act="spPool" data-p="${t.id}">${esc(t.name)}${t.id === 'extra' ? '' : ` ${t.used}/${t.count}`}</button>`).join('')}</div>`;
+  const notes = [];
+  if (ctx.mode === 'create') notes.push('Можна обрати й пізніше — вільні місця лишаться у вкладці «Вміння».');
+  if (ctx.mode === 'player') {
+    if (plan.canSwap) notes.push(plan.swaps ? 'Можеш замінити одне відоме закляття: зніми позначку з одного й обери інше.' : 'Відомі закляття замінюються лише при підвищенні рівня.');
+    if (plan.prep) notes.push(plan.prepOpen ? 'Підготовку можна змінити зараз; після збереження — знову після довгого відпочинку чи підвищення рівня.' : 'Підготовку можна змінити після довгого відпочинку (оголошує майстер) або підвищення рівня.');
+  }
+  if (ctx.mode === 'master') notes.push('Закляття від майстра не займають місць гравця, і гравець не може їх прибрати.');
+  if (plan.always.length) notes.push(`Завжди підготовлені (не займають місць): ${plan.always.map((x) => R.SPELLS[x.sid].name).join(', ')}.`);
+  const pool = tabs.find((t) => t.id === st.pool);
+  if (pool.offList) notes.push(`${pool.offListName}: до ${pool.offList} заклять з будь-якого класу.`);
+  if (pool.schools) notes.push(`Школи «${pool.schools.join('» і «')}»; з інших шкіл — до ${pool.offSchool}.`);
+  if (notes.length) h += `<div class="card">${notes.map((n) => `<p class="hint" style="margin:4px 0">${esc(n)}</p>`).join('')}</div>`;
+  if (st.pool === '_prep') return h + prepListHtml(ctx, plan);
+  const lo = pool.max === 0 ? 0 : Math.max(1, pool.min);
+  const lvls = Array.from({ length: pool.max - lo + 1 }, (_, i) => lo + i);
+  if (lvls.length > 1) {
+    h += `<div class="chips"><button class="chip ${st.lvl === 'all' ? 'on' : ''}" data-act="spLvl" data-l="all">Усі</button>${lvls.map((l) => `<button class="chip ${String(st.lvl) === String(l) ? 'on' : ''}" data-act="spLvl" data-l="${l}">${l ? `${l} коло` : 'Замовляння'}</button>`).join('')}</div>`;
+  }
+  h += `<input class="mt" data-bind="${ctx.bind}" data-live="spells" value="${esc(st.q)}" placeholder="🔎 Пошук закляття">`;
+  return `${h}<div id="spList" class="lines mt">${spellRowsHtml(ctx, plan, pool)}</div>`;
+}
+function prepListHtml(ctx, plan) {
+  const book = ctx.st.list.filter((e) => e.level > 0);
+  if (!book.length) return '<div class="lines"><div class="ln hint">Книга заклять порожня</div></div>';
+  const n = book.filter((e) => e.prepared).length;
+  return `<p class="hint">Підготовлено ${n} з ${plan.prep.max}</p><div class="lines">${book.map((e) => {
+    const sp = e.sid ? R.SPELLS[e.sid] : null;
+    return `<div class="pick" data-act="spPrep" data-id="${esc(e.id)}"><input type="checkbox" ${e.prepared ? 'checked' : ''} tabindex="-1" style="pointer-events:none">
+      <span class="grow"><b>${esc(e.name)}</b><br><small>${esc(sp ? spellMeta(sp) : `${e.level} коло`)}</small></span>${sp ? infoBtn('spellInfo', `data-sid="${sp.id}"`) : ''}</div>`;
+  }).join('')}</div>`;
+}
+function spellRowsHtml(ctx = pickCtx(), plan = R.spellPlan(ctx.sheet), pool = pickPools(ctx, plan).find((t) => t.id === ctx.st.pool)) {
+  if (!pool) return '';
+  const { st } = ctx;
+  const list = st.list;
+  const q = String(st.q || '').trim().toLowerCase();
+  const full = pool.id !== 'extra' && pool.used >= pool.count;
+  const own = (sp) => sp.classes.some((c) => (pool.lists || []).includes(c)) || (pool.extra || []).includes(sp.id);
+  const ids = R.SPELL_IDS.filter((id) => {
+    const sp = R.SPELLS[id];
+    if (pool.id !== 'extra' && R.spellFitsPool(pool, sp)) return false;
+    if (st.lvl !== 'all' && String(sp.level) !== String(st.lvl)) return false;
+    return !q || sp.name.toLowerCase().includes(q);
+  }).sort((a, b) => Number(own(R.SPELLS[b])) - Number(own(R.SPELLS[a])));
+  if (!ids.length) return '<div class="ln hint">Нічого не знайдено</div>';
+  return ids.map((id) => {
+    const sp = R.SPELLS[id];
+    const e = list.find((x) => x.sid === id && (x.pool === pool.id || (pool.id === 'extra' && x.by === 'm')));
+    const elsewhere = !e && list.some((x) => x.sid === id);
+    const always = plan.always.some((x) => x.sid === id);
+    const locked = e && !canDropSpell(ctx, e, plan);
+    const dis = !e && (full || elsewhere || always);
+    const tag = locked ? '🔒' : elsewhere ? 'вже обрано' : always ? 'завжди підготовлене' : !own(sp) ? (pool.offListName || 'інший клас') : pool.schools && sp.level && !pool.schools.includes(sp.school) ? 'інша школа' : '';
+    return `<div class="pick ${dis ? 'disabled' : ''}" data-act="spToggle" data-sid="${id}"><input type="checkbox" ${e ? 'checked' : ''} tabindex="-1" style="pointer-events:none">
+      <span class="grow"><b>${esc(sp.name)}</b><br><small>${esc(spellMeta(sp))}</small></span>${tag ? `<span class="v hint">${esc(tag)}</span>` : ''}${infoBtn('spellInfo', `data-sid="${id}"`)}</div>`;
+  }).join('');
 }
 
 function infoTab(ch) {
@@ -599,7 +738,8 @@ function invTab(ch, M) {
   return h;
 }
 function itemSub(d, it) {
-  return [R.ITEM_TYPES[d.type], d.damage && `${d.damage} ${d.dmgType || ''}`.trim(), d.type === 'armor' && d.ac && `КЗ ${d.ac + num(d.bonus)}`,
+  const cat = R.itemCat(d);
+  return [cat ? R.ITEM_CATS[cat] : R.ITEM_TYPES[d.type], d.damage && `${d.damage} ${d.dmgType || ''}`.trim(), d.type === 'armor' && d.ac && `КЗ ${d.ac + num(d.bonus)}`,
     d.type === 'shield' && `+${num(d.ac, 2) + num(d.bonus)} КЗ`, d.bonus && d.type !== 'armor' && d.type !== 'shield' && `+${d.bonus}`,
     it && it.equipped && 'екіпіровано', it && it.attuned && 'налаштовано'].filter(Boolean).join(' · ');
 }
@@ -669,14 +809,30 @@ function newWizard() {
     step: 1, name: '', raceId: '', classId: '', backgroundId: '', alignment: '', level: 1,
     method: 'standard', assign: {}, pb: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
     rolls: (S.room && S.room.lastRoll) || null, raceChoice: [], skills: [], raceSkills: [], bgSkills: [], expertise: [], text: {}, subclassId: '', choices: {},
-    asi: {}, expertiseAt: {}, choicesUp: {},
+    asi: {}, expertiseAt: {}, choicesUp: {}, profPicks: {}, sp: { list: [], pool: '', q: '', lvl: 'all' }, equip: { gold: false, opts: [], picks: {} },
   };
+}
+// Попередній лист у майстрі (без перевірки володінь і заклять)
+let wizPv = { k: '', v: null };
+function wizPreview() {
+  const inp = wizInput({ spells: [] });
+  const k = JSON.stringify(inp);
+  if (wizPv.k !== k) wizPv = { k, v: R.buildCharacter(inp, { partial: true }).sheet || null };
+  return wizPv.v;
+}
+function wizEquipResult() {
+  const w = S.wiz;
+  const pre = wizPreview();
+  return R.resolveEquipment(w.classId, w.backgroundId, w.equip, w.profPicks, pre && pre.prof);
 }
 const roomMaxLevel = () => Math.max(1, Number(S.room && S.room.room && S.room.room.maxStartLevel) || 1);
 const wizLevel = () => Math.min(roomMaxLevel(), Math.max(1, Number(S.wiz.level) || 1));
 // Кроки майстра: «Розвиток» з'являється, якщо персонаж починає вище 1 рівня
 function wizSteps() {
-  return ['basics', 'abilities', 'skills', ...(wizLevel() > 1 ? ['levels'] : []), 'desc'];
+  const w = S.wiz;
+  const pre = w.raceId && w.classId && w.backgroundId ? wizPreview() : null;
+  return ['basics', 'abilities', 'skills', ...(wizLevel() > 1 ? ['levels'] : []),
+    ...(pre && R.profChoiceSpecs(pre).length ? ['prof'] : []), ...(pre && R.spellPlan(pre).pools.length ? ['spells'] : []), 'equip', 'desc'];
 }
 const wizStepName = () => wizSteps()[S.wiz.step - 1] || 'basics';
 function wizPool() { const w = S.wiz; return w.method === 'standard' ? R.STANDARD_ARRAY : (w.rolls || []); }
@@ -701,7 +857,8 @@ function wizInput(over = {}) {
     name: w.name, raceId: w.raceId, classId: w.classId, backgroundId: w.backgroundId, alignment: w.alignment,
     base: wizBase() || {}, raceChoice: w.raceChoice, skills: w.skills, raceSkills: w.raceSkills, bgSkills: w.bgSkills, expertise: w.expertise, text: w.text,
     subclassId: w.subclassId, choices: w.choices,
-    level: wizLevel(), asi: w.asi, expertiseAt: w.expertiseAt, choicesUp: w.choicesUp, ...over,
+    level: wizLevel(), asi: w.asi, expertiseAt: w.expertiseAt, choicesUp: w.choicesUp,
+    profPicks: w.profPicks, spells: w.sp.list, equip: w.equip, ...over,
   };
 }
 function wizFixedSkills() {
@@ -723,10 +880,26 @@ function wizStepError(name = wizStepName()) {
     if (race.choose && w.raceChoice.length !== race.choose.count) return `Обери ${race.choose.count} характеристики для бонусу раси`;
   }
   if (name === 'skills') {
-    const { errors } = R.buildCharacter(wizInput({ level: 1 }));
+    const { errors } = R.buildCharacter(wizInput({ level: 1 }), { partial: true });
     if (errors.length) return errors[0];
   }
-  if (name === 'levels' || name === 'desc') {
+  if (name === 'levels') {
+    const { errors } = R.buildCharacter(wizInput(), { partial: true });
+    if (errors.length) return errors[0];
+  }
+  if (name === 'prof') {
+    const e = R.buildProf(wizPreview(), w.profPicks).errors;
+    if (e.length) return e[0];
+  }
+  if (name === 'spells') {
+    const e = R.checkSpells(wizPreview(), [], w.sp.list, 'create').errors;
+    if (e.length) return e[0];
+  }
+  if (name === 'equip' || name === 'desc') {
+    const e = wizEquipResult().errors;
+    if (e.length) return e[0];
+  }
+  if (name === 'desc') {
     const { errors } = R.buildCharacter(wizInput());
     if (errors.length) return errors[0];
   }
@@ -748,13 +921,16 @@ function createHtml() {
   if (w.step > steps.length) w.step = steps.length;
   const name = wizStepName();
   const err = wizStepError(name);
-  const titles = { basics: 'Основне', abilities: 'Характеристики', skills: 'Навички', levels: `Розвиток до ${wizLevel()} рівня`, desc: 'Підсумок' };
+  const titles = { basics: 'Основне', abilities: 'Характеристики', skills: 'Навички', levels: `Розвиток до ${wizLevel()} рівня`, prof: 'Володіння й мови', spells: 'Закляття', equip: 'Спорядження', desc: 'Підсумок' };
   let h = `<div class="top"><h2>Новий персонаж</h2><small class="hint">Крок ${w.step}/${steps.length} · ${titles[name]}</small></div>
   <div class="steps">${steps.map((_, i) => `<i class="${i < w.step ? 'on' : ''}"></i>`).join('')}</div>`;
   if (name === 'basics') h += wizStep1();
   if (name === 'abilities') h += wizStep2();
   if (name === 'skills') h += wizStep3();
   if (name === 'levels') h += wizStepLevels();
+  if (name === 'prof') h += wizStepProf();
+  if (name === 'spells') h += spellPickerHtml();
+  if (name === 'equip') h += wizStepEquip();
   if (name === 'desc') h += wizStep4();
   const last = w.step >= steps.length;
   h += `<p class="hint center mt" id="wizErr" ${err ? '' : 'hidden'}>⚠️ ${esc(err || '')}</p><div class="btns mt2">
@@ -776,9 +952,15 @@ function updateWizNav() {
 function wizChanged(path) {
   const w = S.wiz;
   if (!w) return;
-  if (path === 'wiz.classId') Object.assign(w, { skills: [], expertise: [], subclassId: '', choices: {}, asi: {}, expertiseAt: {}, choicesUp: {} });
-  if (path === 'wiz.raceId') Object.assign(w, { raceChoice: [], raceSkills: [], choices: {}, choicesUp: {} });
-  if (path === 'wiz.backgroundId') w.bgSkills = [];
+  const dropPicks = (pre) => { for (const k of Object.keys(w.profPicks)) if (k.startsWith(pre)) delete w.profPicks[k]; };
+  if (path === 'wiz.classId') {
+    Object.assign(w, { skills: [], expertise: [], subclassId: '', choices: {}, asi: {}, expertiseAt: {}, choicesUp: {}, equip: { gold: false, opts: [], picks: {} } });
+    w.sp = { list: [], pool: '', q: '', lvl: 'all' };
+    dropPicks('class:'); dropPicks('sub:');
+  }
+  if (path === 'wiz.raceId') { Object.assign(w, { raceChoice: [], raceSkills: [], choices: {}, choicesUp: {} }); dropPicks('race:'); w.sp.list = w.sp.list.filter((e) => e.pool !== 'raceCantrip'); }
+  if (path === 'wiz.backgroundId') { w.bgSkills = []; dropPicks('bg:'); }
+  if (path === 'wiz.subclassId') dropPicks('sub:');
   if (path === 'wiz.level') { w.choicesUp = {}; w.expertiseAt = {}; }
   const fm2 = path.match(/^wiz\.asi\.(\d+)\.feat\.id$/);
   if (fm2) Object.assign(w.asi[fm2[1]].feat, { ability: '', skills: [] });
@@ -894,13 +1076,91 @@ function wizStep3() {
   }
   const cd = R.CLASS_DATA[w.classId];
   if (cd && cd.subclassLevel === 1) h += subclassPickerHtml(w.classId, w.subclassId, 'wiz.subclassId');
-  const pre = R.buildCharacter(wizInput({ choices: {}, level: 1 })).sheet;
+  const pre = R.buildCharacter(wizInput({ choices: {}, level: 1 }), { partial: true }).sheet;
   if (pre && !R.subclassNeeded(pre, 1)) {
     const specs = R.pendingChoices(pre, 1);
     if (specs.length) h += `<h3 class="sec">Вибори 1 рівня</h3>${choicesHtml(specs, pre, 1, 'wiz.choices', w.choices)}`;
   }
   return h;
 }
+// Крок «Володіння й мови»
+function profLinesHtml(p) {
+  p = p || { armor: [], weapons: [], tools: [], languages: [] };
+  const row = (label, arr, dict) => `<div class="ln" style="align-items:flex-start"><span style="min-width:96px">${label}</span><span class="grow">${arr.length ? esc(arr.map((x) => dict[x] || x).join(', ')) : '<span class="hint">—</span>'}</span></div>`;
+  return row('Обладунки', p.armor, R.ARMOR_PROF) + row('Зброя', p.weapons, R.WEAPON_PROF) + row('Інструменти', p.tools, R.TOOLS) + row('Мови', p.languages, R.LANGUAGES);
+}
+function wizStepProf() {
+  const w = S.wiz;
+  const pre = wizPreview();
+  const fixed = R.fixedProf(pre);
+  let h = `<div class="lines"><h3>Вже маєш (раса, клас, передісторія)</h3>${profLinesHtml(fixed)}</div>`;
+  for (const spec of R.profChoiceSpecs(pre)) {
+    const sel = (w.profPicks[spec.id] = (w.profPicks[spec.id] || []).filter((x) => spec.from.includes(x)));
+    const kindSuffix = spec.kind === 'tool' ? ':tool' : ':lang';
+    const taken = new Set([...(spec.kind === 'tool' ? fixed.tools : fixed.languages),
+      ...Object.entries(w.profPicks).filter(([k]) => k !== spec.id && k.endsWith(kindSuffix)).flatMap(([, v]) => v)]);
+    const dict = spec.kind === 'tool' ? R.TOOLS : R.LANGUAGES;
+    const chip = (id) => {
+      const on = sel.includes(id);
+      const dis = !on && (taken.has(id) || (sel.length >= spec.count && spec.count > 1));
+      return `<button class="chip ${on ? 'on' : ''} ${dis ? 'muted' : ''}" data-act="pickChoice" data-path="wiz.profPicks" data-spec="${spec.id}" data-k="${id}" data-max="${spec.count}" ${taken.has(id) && !on ? 'disabled' : ''}>${esc(dict[id])}</button>`;
+    };
+    let body;
+    if (spec.kind === 'tool') {
+      const groups = Object.values(R.TOOL_GROUPS).map((g) => [g.name, g.ids.filter((id) => spec.from.includes(id))]).filter(([, ids]) => ids.length);
+      body = groups.map(([name, ids]) => `${groups.length > 1 ? `<small class="hint">${esc(name)}</small>` : ''}<div class="chips wrap">${ids.map(chip).join('')}</div>`).join('');
+    } else body = `<div class="chips wrap">${spec.from.map(chip).join('')}</div>`;
+    h += `<div class="card"><h3>${esc(spec.name)}</h3><p class="hint">Обери ${spec.count} (${sel.length}/${spec.count})</p>${body}</div>`;
+  }
+  return h;
+}
+
+// Крок «Спорядження»
+function equipPickSelects(opt, keyOf) {
+  return opt.map(([id], ii) => {
+    if (!R.PICKS[id]) return '';
+    const key = keyOf(ii);
+    const v = S.wiz.equip.picks[key] || '';
+    return `<label class="fld" style="margin:2px 0 8px 30px"><span>${esc(R.PICKS[id].name)}</span><select data-bind="wiz.equip.picks.${key}" data-rerender><option value="">Обери…</option>
+      ${R.PICKS[id].ids().map((x) => `<option value="${x}" ${v === x ? 'selected' : ''}>${esc(R.itemLabel(x))}</option>`).join('')}</select></label>`;
+  }).join('');
+}
+function packHint(opt) {
+  const packs = opt.filter(([id]) => R.PACKS[id]);
+  return packs.map(([id]) => `<br><small class="hint">${esc(R.PACKS[id].map(([x, q]) => `${R.itemLabel(x)}${q > 1 ? ` ×${q}` : ''}`).join(', '))}</small>`).join('');
+}
+function wizStepEquip() {
+  const w = S.wiz;
+  const pre = wizPreview();
+  const ce = R.CLASS_EQUIP[w.classId];
+  const be = R.BG_EQUIP[w.backgroundId] || R.BG_EQUIP.custom;
+  const eq = w.equip;
+  let h = `<div class="chips wrap"><button class="chip ${!eq.gold ? 'on' : ''}" data-act="wizGold" data-v="0">🎒 Стартове спорядження</button>
+    <button class="chip ${eq.gold ? 'on' : ''}" data-act="wizGold" data-v="1">🎲 Золото: ${esc(R.startGoldText(w.classId))}</button></div>`;
+  if (eq.gold) {
+    return `${h}<div class="card"><p class="hint">${abbrify(`Замість спорядження класу й передісторії отримаєш ${R.startGoldText(w.classId)}. Кидок зробить сервер під час створення, результат побачить майстер. Потрібні речі купиш у грі.`)}</p></div>`;
+  }
+  const letters = 'абв';
+  ce.groups.forEach((g, gi) => {
+    h += `<div class="card"><h3>Обери ${gi + 1}</h3>${g.map((opt, oi) => {
+      const on = Number(eq.opts[gi]) === oi && eq.opts[gi] !== undefined && eq.opts[gi] !== null;
+      const allowed = R.equipOptionAllowed(w.classId, `g${gi}o${oi}`, pre && pre.prof);
+      return `<div class="pick ${allowed ? '' : 'disabled'}" data-act="wizEquipOpt" data-g="${gi}" data-o="${oi}"><input type="radio" ${on ? 'checked' : ''} tabindex="-1" style="pointer-events:none">
+        <span class="grow">(${letters[oi]}) ${esc(R.optionLabel(opt))}${allowed ? '' : ' <small class="hint">— потрібне володіння</small>'}${packHint(opt)}</span></div>
+        ${on ? equipPickSelects(opt, (ii) => `g${gi}o${oi}i${ii}`) : ''}`;
+    }).join('')}</div>`;
+  });
+  if (ce.fixed.length) {
+    h += `<div class="card"><h3>Також від класу</h3>${ce.fixed.map((e, i) => `<div class="ln" style="display:block">${esc(R.optionLabel([e]))}${packHint([e])}</div>${equipPickSelects([e], () => `f${i}`)}`).join('')}</div>`;
+  }
+  const bgTool = (w.profPicks['bg:tool'] || [])[0];
+  h += `<div class="card"><h3>Від передісторії: ${esc((R.BACKGROUNDS[w.backgroundId] || {}).name || '')}</h3>
+    ${be.items.map(([id, q]) => `<div class="ln">${id === '@bgtool' ? (bgTool ? esc(R.itemLabel(bgTool)) : '<span class="hint">інструмент, обраний у володіннях</span>') : esc(R.itemLabel(id))}${q > 1 ? ` ×${q}` : ''}</div>`).join('')}
+    <div class="ln"><span class="grow">Гроші</span><span class="v">${be.gp} ${ab('ЗМ')}</span></div></div>
+    <p class="hint center">Обладунок, щит і зброю буде одразу екіпіровано.</p>`;
+  return h;
+}
+
 // Крок «Розвиток»: підклас, ПХ/риси, експертиза та вибори класу до обраного рівня
 function wizStepLevels() {
   const w = S.wiz;
@@ -908,7 +1168,7 @@ function wizStepLevels() {
   const cls = R.CLASSES[w.classId];
   const cd = R.CLASS_DATA[w.classId];
   const snaps = {};
-  const full = R.buildCharacter(wizInput(), { snaps });
+  const full = R.buildCharacter(wizInput(), { snaps, partial: true });
   const sheet = full.sheet;
   let h = `<div class="card"><p class="hint">${abbrify(`Персонаж починає з ${N} рівня (${R.XP_TABLE[N - 1]} досвіду). Хіти: максимум кості на 1 рівні, далі середнє к${cls.hd}.`)}</p>
     ${sheet && sheet.hp ? `<div class="stats"><div class="stat"><small>Хіти</small><b>${sheet.hp.max}</b></div><div class="stat"><small>${ab('Майст.')}</small><b>${fm(R.profBonus(N))}</b></div>
@@ -965,7 +1225,7 @@ function wizStepLevels() {
     }
   }
   // Накопичені вибори класу й підкласу (бойові стилі, виклики, метамагія тощо)
-  const pre = R.buildCharacter(wizInput({ choicesUp: {} })).sheet;
+  const pre = R.buildCharacter(wizInput({ choicesUp: {} }), { partial: true }).sheet;
   if (pre && !R.subclassNeeded(pre, N)) {
     const specs = R.pendingChoices(pre, N);
     if (specs.length) {
@@ -986,7 +1246,7 @@ function wizStepLevels() {
 }
 function wizStep4() {
   const w = S.wiz;
-  const { sheet } = R.buildCharacter(wizInput());
+  const { sheet } = R.buildCharacter(wizInput(), { partial: true });
   let h = '';
   if (sheet) {
     const dv = { ac: R.computeAC(sheet, []), prof: R.sheetProf(sheet) };
@@ -996,13 +1256,19 @@ function wizStep4() {
     <div class="stat"><small>${ab('Майст.')}</small><b>${fm(dv.prof)}</b></div></div>
     <div class="abil mt">${R.ABILITIES.map((a) => `<div class="box"><small>${ab(R.ABILITY_SHORT[a])}</small><div class="m">${fm(R.mod(sheet.abilities[a]))}</div><span class="s">${sheet.abilities[a]}</span></div>`).join('')}</div>
     <div class="card"><small class="hint">Навички: ${Object.keys(sheet.skills).map((k) => R.SKILLS[k][0] + (sheet.skills[k] === 2 ? ' (експ.)' : '')).join(', ')}</small></div>
-    <div class="lines"><h3>Вміння та риси</h3>${featureListHtml(sheet.features || [], { showSrc: true, showLvl: sheet.level > 1 })}</div>`;
+    <div class="lines"><h3>Вміння та риси</h3>${featureListHtml(sheet.features || [], { showSrc: true, showLvl: sheet.level > 1 })}</div>
+    <div class="lines"><h3>Володіння та мови</h3>${profLinesHtml(sheet.prof)}</div>`;
+    const sp = (w.sp.list || []).map((e) => R.SPELLS[e.sid]).filter(Boolean);
+    if (sp.length) h += `<div class="card"><small class="hint">Закляття: ${esc(sp.map((x) => x.name).join(', '))}</small></div>`;
+    const eq = wizEquipResult();
+    h += `<div class="card"><small class="hint">${eq.gold ? `Золото замість спорядження: ${esc(R.startGoldText(w.classId))} (кидок під час створення)`
+      : `Спорядження: ${esc(eq.items.map(([id, q]) => `${R.itemLabel(id)}${q > 1 ? ` ×${q}` : ''}`).join(', '))}; ${eq.gp} ЗМ`}</small></div>`;
   }
   h += `<div class="card"><h3>Опис (можна заповнити пізніше)</h3>
     <label class="fld"><span>Зовнішність</span><textarea data-bind="wiz.text.appearance" maxlength="4000">${esc(w.text.appearance || '')}</textarea></label>
     <label class="fld"><span>Риси характеру</span><textarea data-bind="wiz.text.personality" maxlength="4000">${esc(w.text.personality || '')}</textarea></label>
     <label class="fld"><span>Передісторія персонажа</span><textarea data-bind="wiz.text.backstory" maxlength="4000">${esc(w.text.backstory || '')}</textarea></label>
-    <label class="fld"><span>Володіння та мови</span><textarea data-bind="wiz.text.proficiencies" maxlength="4000" placeholder="Обладунки, зброя, інструменти, мови">${esc(w.text.proficiencies || '')}</textarea></label></div>`;
+    <label class="fld"><span>Нотатки до володінь</span><textarea data-bind="wiz.text.proficiencies" maxlength="4000" placeholder="Додаткові володіння, якщо майстер дозволив">${esc(w.text.proficiencies || '')}</textarea></label></div>`;
   return h;
 }
 
@@ -1085,11 +1351,23 @@ function editSheetHtml() {
     <label class="fld"><span>Витр. кості хітів</span>${numIn('edit.hitDiceUsed', e.hitDiceUsed)}</label></div>
     <div class="grid3"><label class="fld"><span>Успіхи від смерті</span>${numIn('edit.deathSaves.s', e.deathSaves.s)}</label><label class="fld"><span>Провали від смерті</span>${numIn('edit.deathSaves.f', e.deathSaves.f)}</label>
     <label class="fld"><span>Натхнення ⭐</span>${numIn('edit.inspiration', R.inspCount(e), 'min="0" max="99"')}</label></div></div>
+  <div class="card"><h3>Володіння</h3>
+    ${profEditHtml(e)}</div>
   <div class="card"><h3>Закляття</h3>
     <label class="fld"><span>Заклинальна характеристика</span><select data-bind="edit.spell.ability"><option value="">Авто (за класом)</option>${R.ABILITIES.map((a) => `<option value="${a}" ${e.spell.ability === a ? 'selected' : ''}>${R.ABILITY_NAMES[a]}</option>`).join('')}</select></label>
     <label class="row fld"><input type="checkbox" data-act="toggleSlotsOverride" ${Array.isArray(e.spell.slotsOverride) ? 'checked' : ''}><span>Задати комірки вручну (авто: ${auto.join('/') || 'немає'})</span></label>
     ${Array.isArray(e.spell.slotsOverride) ? `<div class="grid3">${Array.from({ length: 9 }, (_, i) => `<label class="fld"><span>${i + 1} коло</span>${numIn(`edit.spell.slotsOverride.${i}`, e.spell.slotsOverride[i] || 0)}</label>`).join('')}</div>` : ''}</div>
   <button class="btn primary block mt2" data-act="saveSheetEdit">💾 Зберегти зміни</button>`;
+}
+
+function profEditHtml(e) {
+  const box = (arr, id, label) => `<label class="row" style="padding:5px 0"><input type="checkbox" data-arr="edit.prof.${arr}" data-v="${id}" ${e.prof[arr].includes(id) ? 'checked' : ''}><span>${esc(label)}</span></label>`;
+  const specific = Object.keys(R.WEAPON_PROF).filter((k) => !['simple', 'martial'].includes(k));
+  return `<small class="hint">Обладунки</small><div class="grid2">${Object.entries(R.ARMOR_PROF).map(([k, v]) => box('armor', k, v)).join('')}</div>
+    <small class="hint">Зброя</small><div class="grid2">${box('weapons', 'simple', 'Проста зброя')}${box('weapons', 'martial', 'Військова зброя')}</div>
+    <details class="mt"><summary class="hint">Окремі види зброї (${e.prof.weapons.filter((k) => specific.includes(k)).length})</summary><div class="grid2">${specific.map((k) => box('weapons', k, R.WEAPON_PROF[k])).join('')}</div></details>
+    <details class="mt"><summary class="hint">Інструменти (${e.prof.tools.length})</summary>${Object.values(R.TOOL_GROUPS).map((g) => `<small class="hint">${esc(g.name)}</small><div class="grid2">${g.ids.map((k) => box('tools', k, R.TOOLS[k])).join('')}</div>`).join('')}</details>
+    <details class="mt"><summary class="hint">Мови (${e.prof.languages.length})</summary><div class="grid2">${Object.entries(R.LANGUAGES).map(([k, v]) => box('languages', k, v)).join('')}</div></details>`;
 }
 
 // ---------- Журнал ----------
@@ -1177,13 +1455,19 @@ const MODALS = {
     if (!it) return null;
     const d = it.data;
     const M = isMaster();
-    const rows = [['Рідкість', `<span class="rname">${R.RARITIES[d.rarity].name}</span>`], ['Тип', R.ITEM_TYPES[d.type]], ['Ціна', abbrify(d.cost)], ['Вага', d.weight != null ? `${d.weight} ${ab('фнт')}` : ''],
+    const icat = R.itemCat(d);
+    const rows = [['Рідкість', `<span class="rname">${R.RARITIES[d.rarity].name}</span>`], ['Тип', R.ITEM_TYPES[d.type]], ['Категорія', icat ? R.ITEM_CATS[icat] : ''], ['Ціна', abbrify(d.cost)], ['Вага', d.weight != null ? `${d.weight} ${ab('фнт')}` : ''],
       ['Шкода', abbrify([d.damage, d.dmgType].filter(Boolean).join(' '))], [`${ab('Дод.')} шкода`, abbrify(d.damage2)], ['Властивості', esc(d.props)], ['Магічний бонус', d.bonus ? `+${d.bonus}` : ''],
       [ab('КЗ'), d.ac != null && d.ac !== '' ? (d.type === 'shield' ? `+${d.ac}` : abbrify(`${d.ac}${d.dexMax == null ? ' + СПР' : d.dexMax ? ` + СПР (макс. ${d.dexMax})` : ''}`)) : ''],
       [`Бонус до ${ab('КЗ')}`, d.acBonus ? `+${d.acBonus}` : ''], ['Потрібна Сила', d.strReq || ''], ['Непомітність', d.stealthDis ? 'перешкода' : ''], ['Налаштування', esc(d.attune)], ['Заряди', esc(d.charges)]]
       .filter(([, v]) => v !== '' && v != null);
     const wd = withBase(d);
-    if (wd.type === 'weapon' || (['staff', 'rod'].includes(wd.type) && wd.damage)) { const w = R.weaponAttack(ch.sheet, wd); rows.push(['Атака', `${fm(w.hit)} · ${wd.damage ? abbrify(w.dmg) : 'шкода не вказана'}`]); }
+    if (wd.type === 'weapon' || (['staff', 'rod'].includes(wd.type) && wd.damage)) {
+      const w = R.weaponAttack(ch.sheet, wd);
+      rows.push(['Атака', `${fm(w.hit)} · ${wd.damage ? abbrify(w.dmg) : 'шкода не вказана'}`]);
+      if (w.noProf) rows.push(['Володіння', '<span class="warn">немає — без бонусу майстерності до атаки</span>']);
+    }
+    if (R.armorProficient(ch.sheet, d) === false) rows.push(['Володіння', '<span class="warn">немає — перешкода на СИЛ/СПР, без заклять</span>']);
     const cons = R.isConsumable(d);
     rows.push(['Витратний', cons ? 'так' : 'ні']);
     const equipable = ['weapon', 'armor', 'shield', 'ring', 'wondrous', 'staff', 'rod', 'wand'].includes(d.type);
@@ -1248,8 +1532,10 @@ const MODALS = {
     <label class="fld"><span>Вага, фнт</span><input type="number" step="0.25" data-bind="modal.form.weight" value="${esc(f.weight ?? '')}"></label>
     <label class="fld"><span>Магічний +</span><input type="number" data-bind="modal.form.bonus" value="${esc(f.bonus || '')}" placeholder="0"></label></div>
     <label class="row fld"><input type="checkbox" data-bind="modal.form.consumable" ${R.isConsumable(f) ? 'checked' : ''}><span>Витратний предмет (гравець може використовувати й зменшувати кількість)</span></label>
-    ${f.type === 'weapon' ? `<label class="fld"><span>Базова зброя (заповнить шкоду й властивості)</span><select data-onchange="applyBaseWeapon"><option value="">—</option>
-      ${BASE_WEAPONS.map((w) => `<option value="${w.id}" ${f.baseName === w.name ? 'selected' : ''}>${esc(w.name)} — ${esc(w.damage || '—')} ${esc(w.dmgType || '')}</option>`).join('')}</select></label>` : ''}
+    ${f.type === 'weapon' ? `<label class="fld"><span>Базова зброя (заповнить шкоду, властивості й категорію)</span><select data-onchange="applyBaseWeapon"><option value="">—</option>
+      ${BASE_WEAPONS.map((w) => `<option value="${w.id}" ${(f.kind ? f.kind === w.id : f.baseName === w.name) ? 'selected' : ''}>${esc(w.name)} — ${esc(w.damage || '—')} ${esc(w.dmgType || '')}</option>`).join('')}</select></label>
+      <label class="fld"><span>Категорія зброї</span><select data-bind="modal.form.cat"><option value="">—</option>${R.WEAPON_CAT_IDS.map((k) => `<option value="${k}" ${f.cat === k ? 'selected' : ''}>${R.ITEM_CATS[k]}</option>`).join('')}</select></label>` : ''}
+    ${f.type === 'armor' ? `<label class="fld"><span>Тип обладунку</span><select data-onchange="armorCat"><option value="">—</option>${R.ARMOR_CAT_IDS.map((k) => `<option value="${k}" ${f.cat === k ? 'selected' : ''}>${R.ITEM_CATS[k]}</option>`).join('')}</select></label>` : ''}
     ${showWeapon ? `<div class="grid2"><label class="fld"><span>Шкода</span><input data-bind="modal.form.damage" value="${esc(f.damage || '')}" placeholder="1к8"></label>
       <label class="fld"><span>Тип шкоди</span><select data-bind="modal.form.dmgType"><option value="">—</option>${R.DAMAGE_TYPES.map((t) => `<option ${f.dmgType === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
       <label class="fld"><span>Додаткова шкода</span><input data-bind="modal.form.damage2" value="${esc(f.damage2 || '')}" placeholder="+2к6 вогнем"></label>
@@ -1271,14 +1557,23 @@ const MODALS = {
 
   spell: (m) => {
     const ch = currentChar();
-    const sp = ch && ch.sheet.spell.spells.find((x) => x.id === m.id);
+    const e = m.id && ch ? (ch.sheet.spell.spells || []).find((x) => x.id === m.id) : null;
+    const sid = (e && e.sid) || m.sid;
+    const db = sid ? R.SPELLS[sid] : null;
+    const sp = db || e;
     if (!sp) return null;
     const rows = [['Коло', sp.level ? `${sp.level}` : 'замовляння'], ['Школа', sp.school], ['Час створення', sp.time], ['Дистанція', sp.range], ['Компоненти', sp.comp],
-      ['Тривалість', sp.dur], ['Концентрація', sp.conc ? 'так' : ''], ['Ритуал', sp.ritual ? 'так' : ''], ['Підготовлено', sp.level ? (sp.prepared ? 'так' : 'ні') : '']].filter(([, v]) => v);
-    return `${hdr(`📖 ${esc(sp.name)}`)}<dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${k === 'Компоненти' ? compAbbr(v) : abbrify(v)}</dd>`).join('')}</dl>
-    ${sp.desc ? `<div class="textblock mt">${abbrify(sp.desc)}</div>` : ''}
-    ${isRO() ? '' : `<div class="btns"><button class="btn" data-act="spellForm" data-id="${esc(sp.id)}">✏️ Змінити</button><button class="btn danger" data-act="deleteSpell" data-id="${esc(sp.id)}">🗑 Видалити</button></div>`}`;
+      ['Тривалість', db ? R.spellDuration(db) : sp.dur], ['Концентрація', !db && sp.conc ? 'так' : ''], ['Ритуал', sp.ritual ? 'так' : ''],
+      ['Класи', db ? db.classes.map((c) => R.CLASSES[c].name).join(', ') : ''],
+      ['Підготовлено', e && sp.level && R.spellPlan(ch.sheet).prep ? (e.prepared ? 'так' : 'ні') : ''], ['Джерело', e && e.by === 'm' ? 'видав майстер' : '']].filter(([, v]) => v);
+    let h = `${hdr(`📖 ${esc(sp.name)}`)}<dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${k === 'Компоненти' ? compAbbr(v) : abbrify(v)}</dd>`).join('')}</dl>
+    ${sp.desc ? `<div class="textblock mt">${abbrify(sp.desc)}</div>` : ''}`;
+    if (e && isMaster() && !isRO()) {
+      h += `<div class="btns">${e.sid ? '' : `<button class="btn" data-act="spellForm" data-id="${esc(e.id)}">✏️ Змінити</button>`}<button class="btn danger" data-act="deleteSpell" data-id="${esc(e.id)}">🗑 Прибрати</button></div>`;
+    }
+    return h;
   },
+  spellInfo: (m) => MODALS.spell({ sid: m.sid }),
 
   spellForm: (m) => {
     const f = m.form;
@@ -1642,7 +1937,7 @@ const ACT = {
   wizAsi: ({ l, a, d }) => {
     const st = S.wiz.asi[l];
     const snaps = {};
-    R.buildCharacter(wizInput({ asi: { ...S.wiz.asi, [l]: { mode: 'asi', asi: {} } } }), { snaps });
+    R.buildCharacter(wizInput({ asi: { ...S.wiz.asi, [l]: { mode: 'asi', asi: {} } } }), { snaps, partial: true });
     const base = snaps[l] ? snaps[l].abilities[a] : 0;
     const sum = Object.values(st.asi).reduce((t, v) => t + v, 0);
     const v = (st.asi[a] || 0) + Number(d);
@@ -1653,6 +1948,8 @@ const ACT = {
     render();
   },
   wizFeatAbility: ({ l, a }) => { S.wiz.asi[l].feat.ability = a; render(); },
+  wizGold: ({ v }) => { S.wiz.equip.gold = v === '1'; render(); },
+  wizEquipOpt: ({ g, o }) => { S.wiz.equip.opts[Number(g)] = Number(o); tapFx(); render(); },
   wizMethod: ({ m }) => { S.wiz.method = m; S.wiz.assign = {}; render(); },
   roll: async () => {
     if (S.wiz.rolls && !(await confirmBox('Перекинути кубики? Майстер побачить обидва кидки в журналі.'))) return;
@@ -1772,7 +2069,60 @@ const ACT = {
   },
 
   // --- Закляття ---
-  spellModal: ({ id }) => openModal({ type: 'spell', id }),
+  spellModal: ({ id, sid }) => openModal({ type: 'spell', id, sid }),
+  spellInfo: ({ sid }) => { if (sid) openModal({ type: 'spellInfo', sid }); },
+  spellPick: async () => {
+    busy(true);
+    await loadRoom(true);
+    busy(false);
+    const ch = currentChar();
+    if (!ch) return;
+    const list = clone(ch.sheet.spell.spells || []);
+    S.pick = { mode: isMaster() ? 'master' : 'player', list, orig: clone(list), pool: '', q: '', lvl: 'all' };
+    go('spellPick', { charId: ch.id });
+  },
+  spPool: ({ p }) => { const st = pickCtx().st; st.pool = p; st.lvl = 'all'; render(); },
+  spLvl: ({ l }) => { pickCtx().st.lvl = l; render(); },
+  spToggle: ({ sid }) => {
+    const ctx = pickCtx();
+    const plan = R.spellPlan(ctx.sheet);
+    const pool = pickPools(ctx, plan).find((t) => t.id === ctx.st.pool);
+    const list = ctx.st.list;
+    const i = list.findIndex((x) => x.sid === sid && (x.pool === pool.id || (pool.id === 'extra' && x.by === 'm')));
+    if (i >= 0) {
+      if (!canDropSpell(ctx, list[i], plan)) { toast(plan.canSwap && list[i].pool === 'known' ? 'Замінити можна лише одне відоме закляття за підвищення рівня' : list[i].pool === 'prep' ? 'Підготовку можна змінити після довгого відпочинку' : 'Це закляття може прибрати лише майстер', true); return; }
+      list.splice(i, 1);
+    } else {
+      const sp = R.SPELLS[sid];
+      if (pool.id !== 'extra') {
+        if (pool.used >= pool.count) { toast(`${pool.name}: вже обрано ${pool.count}`, true); return; }
+        if (pool.id === 'prep' && ctx.mode === 'player' && !plan.prepOpen) { toast('Підготовку можна змінити після довгого відпочинку', true); return; }
+        if (pool.offList && !sp.classes.some((c) => pool.lists.includes(c)) && !(pool.extra || []).includes(sid)
+          && list.filter((x) => x.pool === pool.id && x.sid && !R.SPELLS[x.sid].classes.some((c) => pool.lists.includes(c))).length >= pool.offList) { toast(`${pool.offListName}: максимум ${pool.offList}`, true); return; }
+        if (pool.schools && sp.level && !pool.schools.includes(sp.school)
+          && list.filter((x) => x.pool === pool.id && x.sid && R.SPELLS[x.sid].level && !pool.schools.includes(R.SPELLS[x.sid].school)).length >= pool.offSchool) { toast(`Інших шкіл — максимум ${pool.offSchool}`, true); return; }
+      }
+      list.push({ id: `n${Math.random().toString(36).slice(2, 9)}`, sid, pool: pool.id, name: sp.name, level: sp.level, prepared: pool.id === 'prep', ...(pool.id === 'extra' ? { by: 'm' } : {}) });
+    }
+    tapFx();
+    render();
+  },
+  spPrep: ({ id }) => {
+    const ctx = pickCtx();
+    const plan = R.spellPlan(ctx.sheet);
+    if (ctx.mode === 'player' && !plan.prepOpen) { toast('Підготовку можна змінити після довгого відпочинку або підвищення рівня', true); return; }
+    const e = ctx.st.list.find((x) => x.id === id);
+    if (!e) return;
+    if (!e.prepared && ctx.mode !== 'master' && ctx.st.list.filter((x) => x.prepared && x.level > 0).length >= plan.prep.max) { toast(`Підготовлених — максимум ${plan.prep.max}`, true); return; }
+    e.prepared = !e.prepared;
+    tapFx();
+    render();
+  },
+  spSave: async () => {
+    const ch = currentChar();
+    const ok = await reloadAfter(() => api('spells', { charId: ch.id, spells: S.pick.list }), 'Закляття збережено');
+    if (ok) { S.pick = null; S.nav.pop(); render(); }
+  },
   spellForm: ({ id }) => {
     const ch = currentChar();
     const sp = id && ch.sheet.spell.spells.find((x) => x.id === id);
@@ -1980,6 +2330,7 @@ const ACT = {
     if (!ch) return;
     S.editOrig = clone(ch.sheet);
     S.edit = clone(ch.sheet);
+    if (!S.edit.prof) S.edit.prof = R.profOf(ch.sheet);
     go('editSheet', { charId: ch.id });
   },
   toggleSlotsOverride: () => {
@@ -2072,7 +2423,16 @@ const ACT = {
   applyBaseWeapon: ({ value }) => {
     const w = BASE_WEAPONS.find((x) => x.id === value);
     if (!w) return;
-    Object.assign(S.modal.form, { damage: w.damage, dmgType: w.dmgType, props: w.props, ranged: w.ranged, weight: w.weight, baseName: w.name });
+    Object.assign(S.modal.form, { damage: w.damage, dmgType: w.dmgType, props: w.props, ranged: w.ranged, weight: w.weight, baseName: w.name, kind: w.id, cat: w.cat });
+    renderModal();
+  },
+  armorCat: ({ value }) => {
+    const f = S.modal.form;
+    f.cat = value;
+    // типові обмеження СПР: легкий — без меж, середній — +2, важкий — без СПР
+    if (value === 'light') f.dexMax = '';
+    if (value === 'medium') f.dexMax = 2;
+    if (value === 'heavy') f.dexMax = 0;
     renderModal();
   },
 };
@@ -2111,7 +2471,7 @@ function showTip(el, title, html) {
 }
 function hideTip() { $tip.hidden = true; }
 
-const RO_BLOCK = new Set(['slot', 'res', 'poolModal', 'togglePrep', 'spellForm', 'editText', 'hpModal', 'insp', 'moneyModal', 'equip', 'attune', 'useItem',
+const RO_BLOCK = new Set(['slot', 'res', 'poolModal', 'togglePrep', 'spellForm', 'spellPick', 'spSave', 'spToggle', 'spPrep', 'editText', 'hpModal', 'insp', 'moneyModal', 'equip', 'attune', 'useItem',
   'dropItem', 'giveItemModal', 'openLevelUp', 'spendHD', 'endRest', 'featureForm', 'delFeature', 'fillFeatures', 'saveSpell', 'deleteSpell']);
 
 document.addEventListener('toggle', (e) => { if (e.target.classList && e.target.classList.contains('archive')) S.archiveOpen = e.target.open; }, true);
@@ -2148,6 +2508,7 @@ document.addEventListener('input', (e) => {
   if (!el.dataset || !el.dataset.bind || el.tagName === 'SELECT' || el.type === 'checkbox') return;
   setPath(el.dataset.bind, elValue(el));
   if (el.dataset.live === 'catalog') { const box = document.getElementById('catList'); if (box) box.innerHTML = catalogListHtml(); }
+  if (el.dataset.live === 'spells') { const box = document.getElementById('spList'); if (box) box.innerHTML = spellRowsHtml(); return; }
   if (el.dataset.bind.startsWith('wiz.')) updateWizNav();
 });
 document.addEventListener('change', (e) => {

@@ -1,5 +1,9 @@
 // Правила D&D 5e (SRD 5.1, CC-BY-4.0), спільні для Mini App і сервера.
 import { CLASS_DATA, FEATS, RACE_TRAITS, RACE_CHOICES, PACT_BOONS, resourceDefs } from './classdata.js';
+import { SPELLS, DOMAIN_SPELLS, OATH_SPELLS, LAND_SPELLS, PATRON_SPELLS } from './spells.js';
+import { buildProf, grantProf, weaponProficient, SUBCLASS_PROF, FEAT_PROF } from './gear.js';
+export * from './gear.js';
+export { SPELLS, SPELL_IDS, spellDuration, SPELL_LIST_NAMES } from './spells.js';
 export { CLASS_DATA, FEATS };
 
 export const ABILITIES = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
@@ -204,7 +208,7 @@ export const SPELL_SCHOOLS = ['Огородження', 'Виклик', 'Віщ�
 
 export const TEXT_FIELDS = {
   features: 'Вміння та риси',
-  proficiencies: 'Володіння та мови',
+  proficiencies: 'Нотатки до володінь',
   personality: 'Риси характеру',
   ideals: 'Ідеали',
   bonds: 'Прихильності',
@@ -286,10 +290,11 @@ export function weaponAttack(sheet, d) {
   if (d.ranged) abMod = dex;
   if (props.includes('фехтув')) abMod = Math.max(str, dex);
   const magic = Number(d.bonus || 0);
-  const hit = abMod + sheetProf(sheet) + magic + (d.ranged && hasStyle(sheet, 'archery') ? 2 : 0);
+  const noProf = weaponProficient(sheet, d) === false;
+  const hit = abMod + (noProf ? 0 : sheetProf(sheet)) + magic + (d.ranged && hasStyle(sheet, 'archery') ? 2 : 0);
   const dmgMod = abMod + magic;
   const dmg = d.damage ? `${d.damage}${dmgMod ? (dmgMod > 0 ? '+' + dmgMod : dmgMod) : ''} ${d.dmgType || ''}`.trim() : '—';
-  return { hit, dmg };
+  return { hit, dmg, noProf };
 }
 
 export function passivePerception(sheet) {
@@ -388,6 +393,21 @@ export function buildCharacter(input, opts = {}) {
   s.hp = { max: hp, cur: hp, temp: 0 };
   s.level = N; s.targetLevel = N; s.xp = XP_TABLE[N - 1];
   s.features.sort((a, b) => a.lvl - b.lvl);
+  // Володіння й мови (з виборами раси, класу, передісторії, підкласу)
+  // opts.partial — проміжна перевірка в майстрі створення: без володінь і заклять
+  const pr = buildProf(s, input.profPicks || {});
+  s.prof = pr.prof;
+  if (!opts.partial) errors.push(...pr.errors);
+
+  // Закляття (можна обрати й пізніше — вільні місця лишаються)
+  s.spell.spells = [];
+  if (Array.isArray(input.spells) && input.spells.length && !opts.partial) {
+    const r = checkSpells(s, [], input.spells, 'create');
+    errors.push(...r.errors);
+    s.spell.spells = r.list;
+  }
+  s.spell.swaps = 0;
+  s.spell.prepOpen = true;
   s.spell.ability = null;
   s.text = {};
   for (const k of TEXT_FIELD_IDS) if (input.text && input.text[k]) s.text[k] = String(input.text[k]).slice(0, 4000);
@@ -506,6 +526,7 @@ export function gainLevelFeatures(sheet, newLevel, input = {}) {
     else {
       sheet.subclassId = input.subclassId;
       sheet.subclass = sc.name;
+      grantProf(sheet, `${sheet.classId}.${sheet.subclassId}`, SUBCLASS_PROF);
       sheet.features.push({ lvl: newLevel, name: `${cd.subclassLabel}: ${sc.name}`, desc: '', src: 'subclass' });
       for (let L = cd.subclassLevel; L < newLevel; L++) pushF(sheet, subclassFeaturesAt(sheet.classId, sheet.subclassId, L), L, 'subclass');
     }
@@ -605,6 +626,7 @@ export function applyFeat(sheet, input, level, hpLevels = level) {
     extra.push(sk.map((k) => SKILLS[k][0]).join(', '));
   }
   sheet.feats = [...(sheet.feats || []), ft.id];
+  grantProf(sheet, ft.id, FEAT_PROF);
   sheet.features = sheet.features || [];
   sheet.features.push({ lvl: level, name: `Риса: ${ft.name}`, desc: ft.desc + (extra.length ? ` (${extra.join('; ')})` : ''), src: 'feat' });
   return [];
@@ -631,6 +653,7 @@ export function applyRest(sheet, kind, nowSec) {
     sheet.resUsed = {};
     sheet.shortRest = null;
     out.push('повні ХП', `відновлено ${regain} кост. хітів`, 'комірки заклять і ресурси відновлено');
+    if (isPreparedCaster(sheet)) { sheet.spell.prepOpen = true; out.push('можна змінити підготовлені закляття'); }
   } else {
     for (const r of res) if (r.recharge === 'short' && sheet.resUsed[r.id]) { sheet.resUsed[r.id] = 0; out.push(r.name); }
     if (casterInfo(sheet.classId, sheet.subclassId).type === 'pact') { sheet.spell.slotsUsed = [0, 0, 0, 0, 0, 0, 0, 0, 0]; out.push('комірки договору'); }
@@ -659,4 +682,186 @@ export function attuneProblem(sheet, attune) {
     else if (w.startsWith('дварф')) { known = true; if (sheet.raceId === 'hill_dwarf') return null; }
   }
   return known ? `Налаштуватися на цей предмет може лише: ${m[1]}` : null;
+}
+
+// ================= Закляття: що й скільки можна обрати =================
+const CANTRIPS_KNOWN = { bard: { 1: 2, 4: 3, 10: 4 }, cleric: { 1: 3, 4: 4, 10: 5 }, druid: { 1: 2, 4: 3, 10: 4 }, sorcerer: { 1: 4, 4: 5, 10: 6 },
+  warlock: { 1: 2, 4: 3, 10: 4 }, wizard: { 1: 3, 4: 4, 10: 5 }, eldritch_knight: { 3: 2, 10: 3 }, arcane_trickster: { 3: 2, 10: 3 } };
+const SPELLS_KNOWN = {
+  bard: [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 15, 16, 18, 19, 19, 20, 22, 22, 22],
+  sorcerer: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15, 15, 15, 15],
+  warlock: [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15],
+  ranger: [0, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11],
+  eldritch_knight: [0, 0, 3, 4, 4, 4, 5, 6, 6, 7, 8, 8, 9, 10, 10, 11, 11, 11, 12, 13],
+  arcane_trickster: [0, 0, 3, 4, 4, 4, 5, 6, 6, 7, 8, 8, 9, 10, 10, 11, 11, 11, 12, 13],
+};
+const THIRD_SCHOOLS = { eldritch_knight: ['Огородження', 'Втілення'], arcane_trickster: ['Зачарування', 'Ілюзія'] };
+const ANY_LIST = ['bard', 'cleric', 'druid', 'paladin', 'ranger', 'sorcerer', 'warlock', 'wizard'];
+const atLv = (tbl, L) => { let v = 0; for (const [l, n] of Object.entries(tbl || {})) if (L >= Number(l)) v = n; return v; };
+// Класи, що міняють одне відоме закляття при підвищенні рівня
+export const SWAP_CASTERS = ['bard', 'sorcerer', 'warlock', 'ranger'];
+export function spellCasterKey(sheet) {
+  if (sheet.classId === 'fighter' && sheet.subclassId === 'eldritch_knight') return 'eldritch_knight';
+  if (sheet.classId === 'rogue' && sheet.subclassId === 'arcane_trickster') return 'arcane_trickster';
+  return sheet.classId;
+}
+export const canSwapSpell = (sheet) => SWAP_CASTERS.includes(spellCasterKey(sheet)) || !!THIRD_SCHOOLS[spellCasterKey(sheet)];
+export const isPreparedCaster = (sheet) => ['cleric', 'druid', 'paladin', 'wizard'].includes(sheet.classId);
+
+// План заклять персонажа: пули виборів, підготовка, завжди підготовлені
+export function spellPlan(sheet) {
+  const L = clamp(Number(sheet.level) || 1, 1, 20);
+  const key = spellCasterKey(sheet);
+  const sub = sheet.subclassId;
+  const slots = spellSlots(sheet.classId, L, sub);
+  const maxLevel = slots.reduce((m, n, i) => (n > 0 ? i + 1 : m), 0);
+  const third = !!THIRD_SCHOOLS[key];
+  const list = third ? 'wizard' : sheet.classId;
+  const ab = casterInfo(sheet.classId, sub).ability;
+  const m = ab ? mod(sheet.abilities[ab]) : 0;
+  const ch = sheet.choices || {};
+  const pools = [];
+  const always = [];
+  const ct = atLv(CANTRIPS_KNOWN[key], L);
+  if (ct) pools.push({ id: 'cantrips', name: 'Замовляння', count: ct, lists: [list], min: 0, max: 0 });
+  if (sheet.raceId === 'high_elf') pools.push({ id: 'raceCantrip', name: 'Замовляння високого ельфа', count: 1, lists: ['wizard'], min: 0, max: 0 });
+  if (sheet.classId === 'cleric' && sub === 'nature') pools.push({ id: 'bonusCantrip', name: 'Замовляння друїда (домен природи)', count: 1, lists: ['druid'], min: 0, max: 0 });
+  if (sheet.classId === 'druid' && sub === 'land' && L >= 2) pools.push({ id: 'bonusCantrip', name: 'Додаткове замовляння (коло землі)', count: 1, lists: ['druid'], min: 0, max: 0 });
+  if (sheet.classId === 'warlock' && (ch.pactBoon || []).includes('tome')) pools.push({ id: 'tome', name: 'Книга тіней (замовляння будь-яких класів)', count: 3, lists: ANY_LIST, min: 0, max: 0 });
+  if ((sheet.feats || []).includes('magic_initiate')) {
+    pools.push({ id: 'miCantrips', name: 'Ініціат магії: замовляння', count: 2, lists: ANY_LIST, min: 0, max: 0 });
+    pools.push({ id: 'miSpell', name: 'Ініціат магії: закляття 1 кола', count: 1, lists: ANY_LIST, min: 1, max: 1 });
+  }
+  const known = SPELLS_KNOWN[key] ? SPELLS_KNOWN[key][L - 1] : 0;
+  if (known && maxLevel) {
+    const p = { id: 'known', name: 'Відомі закляття', count: known, lists: [list], min: 1, max: maxLevel };
+    if (key === 'warlock' && PATRON_SPELLS[sub]) p.extra = PATRON_SPELLS[sub];
+    if (key === 'bard') { const n = [10, 14, 18].filter((x) => L >= x).length * 2; if (n) { p.offList = n; p.offListName = 'Магічні таємниці'; } }
+    if (third) { p.schools = THIRD_SCHOOLS[key]; p.offSchool = [3, 8, 14, 20].filter((x) => L >= x).length; }
+    pools.push(p);
+  }
+  if (sheet.classId === 'wizard') pools.push({ id: 'book', name: 'Книга заклять', count: 6 + 2 * (L - 1), lists: ['wizard'], min: 1, max: maxLevel });
+  if (sheet.classId === 'warlock') {
+    for (const [lv, sl] of [[11, 6], [13, 7], [15, 8], [17, 9]]) if (L >= lv) pools.push({ id: `arcanum${sl}`, name: `Таємний арканум: ${sl} коло`, count: 1, lists: ['warlock'], min: sl, max: sl });
+  }
+  if (sheet.classId === 'bard' && sub === 'lore' && L >= 6) pools.push({ id: 'loreSecrets', name: 'Додаткові магічні таємниці', count: 2, lists: ANY_LIST, min: 0, max: maxLevel });
+  let prep = null;
+  if (['cleric', 'druid', 'paladin'].includes(sheet.classId) && maxLevel) {
+    const n = Math.max(1, m + (sheet.classId === 'paladin' ? Math.floor(L / 2) : L));
+    prep = { from: 'list', max: n };
+    pools.push({ id: 'prep', name: 'Підготовлені закляття', count: n, lists: [sheet.classId], min: 1, max: maxLevel, prep: true });
+  }
+  if (sheet.classId === 'wizard') prep = { from: 'book', max: Math.max(1, m + L) };
+  // Завжди підготовлені
+  const addAlways = (ids, src) => { for (const id of ids) if (SPELLS[id] && !always.some((x) => x.sid === id)) always.push({ sid: id, src }); };
+  if (sheet.classId === 'cleric' && DOMAIN_SPELLS[sub]) for (const [lv, ids] of Object.entries(DOMAIN_SPELLS[sub])) if (L >= Number(lv)) addAlways(ids, 'Домен');
+  if (sheet.classId === 'cleric' && sub === 'light') addAlways(['light'], 'Домен');
+  if (sheet.classId === 'paladin' && OATH_SPELLS[sub]) for (const [lv, ids] of Object.entries(OATH_SPELLS[sub])) if (L >= Number(lv)) addAlways(ids, 'Клятва');
+  if (sheet.classId === 'druid' && sub === 'land') {
+    const land = (ch.land || [])[0];
+    if (LAND_SPELLS[land]) for (const [lv, ids] of Object.entries(LAND_SPELLS[land])) if (L >= Number(lv)) addAlways(ids, 'Коло землі');
+  }
+  if (key === 'arcane_trickster' && L >= 3) addAlways(['mage_hand'], 'Підклас');
+  if (sheet.raceId === 'tiefling') addAlways(['thaumaturgy', ...(L >= 3 ? ['hellish_rebuke'] : []), ...(L >= 5 ? ['darkness'] : [])], 'Раса');
+  const sp = sheet.spell || {};
+  return {
+    key, ability: ab, maxLevel, pools, prep, always,
+    swaps: Number(sp.swaps) || 0,
+    prepOpen: sp.prepOpen === undefined ? true : !!sp.prepOpen,
+    canSwap: canSwapSpell(sheet),
+  };
+}
+
+// Чи підходить закляття до пулу (без лімітів кількості)
+export function spellFitsPool(pool, sp) {
+  if (!pool || !sp) return 'немає такого вибору';
+  if (pool.max === 0 ? sp.level !== 0 : sp.level === 0) return pool.max === 0 ? 'лише замовляння' : 'не замовляння';
+  if (sp.level > pool.max) return `доступно з ${sp.level} кола`;
+  if (sp.level && sp.level < pool.min) return `потрібне закляття ${pool.min} кола`;
+  const inList = sp.classes.some((c) => pool.lists.includes(c)) || (pool.extra || []).includes(sp.id);
+  if (!inList && !pool.offList) return 'не з твого списку';
+  return '';
+}
+const offListOf = (pool, sp) => !(sp.classes.some((c) => pool.lists.includes(c)) || (pool.extra || []).includes(sp.id));
+const offSchoolOf = (pool, sp) => !!pool.schools && sp.level > 0 && !pool.schools.includes(sp.school);
+const newSpellId = () => Math.random().toString(36).slice(2, 10);
+
+// Перевірка зміни списку заклять. mode: 'create' | 'player' | 'master'.
+// Записи: {id, sid, pool, prepared, by:'m'} — закляття з бази; без sid — власні (додає лише майстер).
+export function checkSpells(sheet, oldList, newList, mode) {
+  const plan = spellPlan(sheet);
+  const errors = [];
+  const out = [];
+  oldList = Array.isArray(oldList) ? oldList : [];
+  const oldById = new Map(oldList.map((e) => [e.id, e]));
+  const seen = new Set();
+  for (const raw of Array.isArray(newList) ? newList : []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const prev = raw.id ? oldById.get(String(raw.id)) : null;
+    if (!raw.sid) {
+      // власне закляття: гравець лише залишає його (і може змінити підготовку)
+      if (mode === 'master') { out.push({ ...raw }); continue; }
+      if (!prev || prev.sid) { errors.push('Власні закляття додає лише майстер'); continue; }
+      out.push({ ...prev, prepared: !!raw.prepared });
+      continue;
+    }
+    const sp = SPELLS[raw.sid];
+    if (!sp) { errors.push('Невідоме закляття'); continue; }
+    if (seen.has(sp.id) && mode !== 'master') { errors.push(`«${sp.name}» вже є у списку`); continue; }
+    seen.add(sp.id);
+    const by = prev ? prev.by : mode === 'master' ? 'm' : undefined;
+    const pool = String(raw.pool || (prev && prev.pool) || (mode === 'master' ? 'extra' : ''));
+    const e = { id: prev ? prev.id : newSpellId(), sid: sp.id, pool, name: sp.name, level: sp.level, prepared: pool === 'prep' ? true : !!raw.prepared };
+    if (by) e.by = by;
+    if (prev && prev.pool !== pool && mode !== 'master') { errors.push(`«${sp.name}»: не можна переносити між списками`); continue; }
+    out.push(e);
+  }
+  if (mode === 'master') return { errors, list: out, plan };
+  const mine = out.filter((e) => e.sid && e.by !== 'm');
+  for (const e of mine) {
+    const pool = plan.pools.find((p) => p.id === e.pool);
+    const why = pool ? spellFitsPool(pool, SPELLS[e.sid]) : 'немає місця для такого закляття';
+    const isOld = oldById.has(e.id);
+    if (why && !isOld) errors.push(`«${e.name}»: ${why}`);
+  }
+  for (const p of plan.pools) {
+    const inPool = mine.filter((e) => e.pool === p.id);
+    const added = inPool.filter((e) => !oldById.has(e.id)).length;
+    if (inPool.length > p.count && added) errors.push(`${p.name}: максимум ${p.count}`);
+    if (p.offList) {
+      const off = inPool.filter((e) => offListOf(p, SPELLS[e.sid])).length;
+      if (off > p.offList && added) errors.push(`${p.offListName}: з інших списків максимум ${p.offList}`);
+    }
+    if (p.schools) {
+      const off = inPool.filter((e) => offSchoolOf(p, SPELLS[e.sid])).length;
+      if (off > p.offSchool && added) errors.push(`${p.name}: шкіл, крім «${p.schools.join('» і «')}», максимум ${p.offSchool}`);
+    }
+  }
+  // Підготовка
+  const prepCount = plan.prep && plan.prep.from === 'book'
+    ? out.filter((e) => e.prepared && e.level > 0 && (e.pool === 'book' || !e.sid)).length
+    : 0;
+  let swapsUsed = 0;
+  let prepChanged = false;
+  if (mode === 'player') {
+    for (const old of oldList) {
+      const now = out.find((e) => e.id === old.id);
+      if (now) { if (!!now.prepared !== !!old.prepared && old.pool !== 'prep') prepChanged = true; continue; }
+      if (!old.sid || old.by === 'm') errors.push(`«${old.name}» може прибрати лише майстер`);
+      else if (old.pool === 'prep') prepChanged = true;
+      else if (old.pool === 'known') swapsUsed++;
+      else errors.push(`«${old.name}» не можна прибрати — лише майстер`);
+    }
+    if (out.some((e) => e.pool === 'prep' && !oldById.has(e.id))) prepChanged = true;
+    if (prepChanged && !plan.prepOpen) errors.push('Змінювати підготовлені закляття можна після довгого відпочинку або підвищення рівня');
+    if (swapsUsed > plan.swaps) errors.push(plan.canSwap ? 'Замінити відоме закляття можна лише одне за підвищення рівня' : 'Відомі закляття не можна прибрати');
+  }
+  if (plan.prep && plan.prep.from === 'book' && prepCount > plan.prep.max && (mode === 'create' || prepChanged)) errors.push(`Підготовлених заклять — максимум ${plan.prep.max}`);
+  return { errors: [...new Set(errors)], list: out, plan, swapsUsed, prepChanged };
+}
+
+// Скільки ще можна обрати в кожному пулі
+export function spellPoolUsage(sheet, list) {
+  const plan = spellPlan(sheet);
+  return plan.pools.map((p) => ({ ...p, used: (list || []).filter((e) => e.sid && e.by !== 'm' && e.pool === p.id).length }));
 }
