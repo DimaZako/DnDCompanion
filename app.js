@@ -332,9 +332,17 @@ function derived(ch) {
 }
 
 // ================= Рендер =================
+// Клас персонажа на екрані — для кольорової теми й емблеми
+function viewClass(v) {
+  const ch = v.view === 'room' ? (S.room && S.room.role !== 'master' && S.room.character)
+    : v.view === 'char' ? currentChar() : v.view === 'archiveChar' ? (S.archive && S.archive.character) : null;
+  return ch && ch.sheet && R.CLASSES[ch.sheet.classId] ? ch.sheet.classId : '';
+}
 function render() {
   const v = cur();
   const fn = VIEWS[v.view] || VIEWS.loading;
+  const cls = viewClass(v);
+  if (cls) document.body.dataset.cls = cls; else delete document.body.dataset.cls;
   $app.innerHTML = fn(v);
   syncBackButton();
   syncWatch();
@@ -368,7 +376,7 @@ function archiveBadge(a) {
 function archiveHtml() {
   const list = (S.me && S.me.archive) || [];
   return `<details class="card archive" ${S.archiveOpen ? 'open' : ''}><summary><b>📚 Архів персонажів</b> <span class="badge">${list.length}</span></summary>
-    ${list.length ? list.map((a) => `<div class="list-item tapline" data-act="openArchive" data-id="${a.id}" style="padding:10px 0;border-top:1px solid var(--line)">
+    ${list.length ? list.map((a) => `<div class="list-item tapline" data-act="openArchive" data-id="${a.id}" data-cls="${esc(a.classId)}" style="padding:10px 0;border-top:1px solid var(--line)">
       <div class="ava">${a.dead ? '💀' : CLASS_ICON[a.classId] || '🧝'}</div>
       <div class="meta"><b>${esc(a.name)}</b><small>${esc(a.raceId === 'custom' ? a.raceName : (R.RACES[a.raceId] || {}).name || '')} · ${esc((R.CLASSES[a.classId] || {}).name || '')} ${a.level} рів.${a.subclass ? ` · ${esc(a.subclass)}` : ''}</small>
       <small>🏰 ${esc(a.roomName)}</small>${archiveBadge(a)}</div><span class="chev">›</span></div>`).join('')
@@ -487,7 +495,7 @@ function playerCard(p) {
   }
   const s = ch.sheet;
   const dv = derived(ch);
-  return `<div class="card tap" data-act="openChar" data-id="${ch.id}"><div class="list-item">
+  return `<div class="card tap" data-act="openChar" data-id="${ch.id}" data-cls="${esc(s.classId)}"><div class="list-item">
     <div class="ava">${CLASS_ICON[s.classId] || '🧝'}</div>
     <div class="meta"><b>${esc(s.name)}</b><small>${esc(raceName(s))} · ${esc(className(s))} ${s.level} рів. · ${esc(p.name)}</small></div>
     <div class="center"><small>${ab('КЗ')}</small><div><b>${dv.ac}</b></div></div><span class="chev">›</span></div>
@@ -517,7 +525,7 @@ function charHtml(ch, M) {
     : RO ? `<div class="top"><small class="hint">📚 Архів · 🏰 ${esc(S.archive.info.roomName)}</small>${archiveBadge(S.archive.info)}</div>`
       : `<div class="top"><small class="hint">🏰 ${esc(S.room.room.name)}</small><button class="link" data-act="roomMenu">⋯</button></div>`;
   const insp = R.inspCount(s);
-  h += `<div class="char-head"><div class="nm">${CLASS_ICON[s.classId] || ''} ${esc(s.name)}${insp ? ` <span class="badge gold" title="Натхнення">⭐ ${insp}</span>` : ''}</div>
+  h += `<div class="char-head"><div class="emb" aria-hidden="true"></div><div class="nm">${CLASS_ICON[s.classId] || ''} ${esc(s.name)}${insp ? ` <span class="badge gold" title="Натхнення">⭐ ${insp}</span>` : ''}</div>
     <div class="sub">${esc(raceName(s))} · ${esc(className(s))}${s.subclass ? ` (${esc(s.subclass)})` : ''} · ${s.level} рівень</div>
     <div class="xp"><div class="bar"><i style="width:${pct}%"></i></div><small>Досвід: ${s.xp}${next ? ` / ${next}` : ''}</small></div></div>
   <div class="stats">
@@ -1334,7 +1342,7 @@ function wizStep4() {
   let h = '';
   if (sheet) {
     const dv = { ac: R.computeAC(sheet, []), prof: R.sheetProf(sheet) };
-    h += `<div class="char-head"><div class="nm">${CLASS_ICON[sheet.classId]} ${esc(sheet.name)}</div><div class="sub">${esc(raceName(sheet))} · ${esc(className(sheet))}${sheet.subclass ? ` (${esc(sheet.subclass)})` : ''} · ${sheet.level} рівень</div></div>
+    h += `<div class="char-head"><div class="emb" aria-hidden="true"></div><div class="nm">${CLASS_ICON[sheet.classId]} ${esc(sheet.name)}</div><div class="sub">${esc(raceName(sheet))} · ${esc(className(sheet))}${sheet.subclass ? ` (${esc(sheet.subclass)})` : ''} · ${sheet.level} рівень</div></div>
     <div class="stats"><div class="stat"><small>Хіти</small><b>${sheet.hp.max}</b></div><div class="stat"><small>${ab('КЗ')}</small><b>${dv.ac}</b></div>
     <div class="stat"><small>${ab('Ініціат.')}</small><b>${fm(R.mod(sheet.abilities.dex))}</b></div><div class="stat"><small>${ab('Швидк.')}</small><b>${sheet.speed}</b></div>
     <div class="stat"><small>${ab('Майст.')}</small><b>${fm(dv.prof)}</b></div></div>

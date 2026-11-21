@@ -273,3 +273,55 @@ details > summary { cursor: pointer; padding: 6px 0; list-style-position: inside
 .lang-sw button { min-width: 38px; padding: 6px 9px; border-radius: 9px; font-size: 12.5px; font-weight: 700; letter-spacing: .3px; color: var(--hint); }
 .lang-sw button.on { background: var(--accent); color: var(--accent-text); }
 .lang-sw button:active { opacity: .75; }
+
+/* ===== Кольори й емблеми класів (лист персонажа) ===== */
+[data-cls=barbarian] { --cls: #e2622f; --cls-l: #ffb27a; --cls-d: #6e2410; --cls-text: #111111; --cls-img: url(img/classes/barbarian.svg); }
+[data-cls=bard] { --cls: #d6539b; --cls-l: #ffb0dc; --cls-d: #6b1d4a; --cls-text: #111111; --cls-img: url(img/classes/bard.svg); }
+[data-cls=cleric] { --cls: #b9c9dc; --cls-l: #ffffff; --cls-d: #3f5670; --cls-text: #111111; --cls-img: url(img/classes/cleric.svg); }
+[data-cls=druid] { --cls: #4caf50; --cls-l: #b4ecae; --cls-d: #1f5a22; --cls-text: #111111; --cls-img: url(img/classes/druid.svg); }
+[data-cls=fighter] { --cls: #d24b4b; --cls-l: #ffa196; --cls-d: #5e1717; --cls-text: #111111; --cls-img: url(img/classes/fighter.svg); }
+[data-cls=monk] { --cls: #3fa7d6; --cls-l: #b2e7fd; --cls-d: #154e6b; --cls-text: #111111; --cls-img: url(img/classes/monk.svg); }
+[data-cls=paladin] { --cls: #e2b13c; --cls-l: #fff1bd; --cls-d: #6e5210; --cls-text: #111111; --cls-img: url(img/classes/paladin.svg); }
+[data-cls=ranger] { --cls: #8d9b3a; --cls-l: #dbe596; --cls-d: #3c4414; --cls-text: #111111; --cls-img: url(img/classes/ranger.svg); }
+[data-cls=rogue] { --cls: #7d8794; --cls-l: #d3d9e1; --cls-d: #20252c; --cls-text: #111111; --cls-img: url(img/classes/rogue.svg); }
+[data-cls=sorcerer] { --cls: #20c0d0; --cls-l: #b0f6fc; --cls-d: #0b5560; --cls-text: #111111; --cls-img: url(img/classes/sorcerer.svg); }
+[data-cls=warlock] { --cls: #9b4fd1; --cls-l: #e0bcff; --cls-d: #3d1660; --cls-text: #ffffff; --cls-img: url(img/classes/warlock.svg); }
+[data-cls=wizard] { --cls: #4f6ef0; --cls-l: #c0cbff; --cls-d: #1d2b75; --cls-text: #ffffff; --cls-img: url(img/classes/wizard.svg); }
+body[data-cls] {
+  --accent: var(--cls); --accent-text: var(--cls-text);
+  --cls-card: color-mix(in srgb, var(--cls) 7%, var(--card));
+  --cls-line: color-mix(in srgb, var(--cls) 18%, transparent);
+  background: radial-gradient(140% 60% at 100% 0%, color-mix(in srgb, var(--cls) 14%, var(--bg2)) 0%, var(--bg2) 72%) fixed, var(--bg2);
+}
+body[data-cls] .card, body[data-cls] .lines, body[data-cls] .stat, body[data-cls] .abil .box, body[data-cls] .item, body[data-cls] .tabs {
+  background-color: var(--cls-card); box-shadow: inset 0 0 0 1px var(--cls-line);
+}
+body[data-cls] .card h3, body[data-cls] .lines h3 { color: color-mix(in srgb, var(--cls) 55%, var(--text)); }
+body[data-cls] .stat small, body[data-cls] .abil .box small { color: color-mix(in srgb, var(--cls) 60%, var(--hint)); }
+body[data-cls] .abil .box .s { background: color-mix(in srgb, var(--cls) 16%, transparent); }
+body[data-cls] .xp .bar i { background: linear-gradient(90deg, var(--cls), var(--cls-l)); }
+body[data-cls] .sheet { box-shadow: inset 0 3px 0 var(--cls); }
+body[data-cls] .stat.tapable { outline-color: color-mix(in srgb, var(--cls) 60%, transparent); }
+/* шапка персонажа: емблема класу праворуч, текст ліворуч на щільнішому тлі */
+body[data-cls] .char-head {
+  position: relative; overflow: hidden; isolation: isolate; min-height: 112px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--cls) 30%, var(--card)), color-mix(in srgb, var(--cls-d) 45%, var(--card)));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cls) 40%, transparent);
+}
+.char-head .emb { display: none; }
+body[data-cls] .char-head .emb {
+  display: block; position: absolute; z-index: -2; right: -30px; top: 50%; width: 178px; height: 178px; transform: translateY(-50%);
+  background: var(--cls-img) center / contain no-repeat; pointer-events: none;
+}
+body[data-cls] .char-head::after {
+  content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--cls) 22%, var(--card)) 0%, color-mix(in srgb, var(--cls) 22%, var(--card)) 38%,
+    color-mix(in srgb, color-mix(in srgb, var(--cls) 22%, var(--card)) 55%, transparent) 64%, transparent 88%);
+}
+body[data-cls] .char-head .nm, body[data-cls] .char-head .sub { padding-right: 92px; text-shadow: 0 1px 4px color-mix(in srgb, var(--bg2) 70%, transparent); }
+body[data-cls] .char-head .sub { color: color-mix(in srgb, var(--text) 72%, var(--hint)); }
+body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%, var(--hint)); }
+/* картки персонажів у списках — смужка кольору класу */
+.card[data-cls], .list-item[data-cls] { box-shadow: inset 3px 0 0 var(--cls); }
+.list-item[data-cls] { padding-left: 8px !important; }
+[data-cls] .ava { background: color-mix(in srgb, var(--cls) 22%, var(--soft)); }

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#3fa7d6" stop-opacity=".55"/><stop offset=".6" stop-color="#3fa7d6" stop-opacity=".18"/><stop offset="1" stop-color="#3fa7d6" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b2e7fd"/><stop offset="1" stop-color="#3fa7d6"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#3fa7d6" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#b2e7fd" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+
+<circle cx="100" cy="72" r="14" fill="none" stroke="#b2e7fd" stroke-width="3" opacity=".8"/>
+<path d="M100,146 C86,118 86,86 100,58 C114,86 114,118 100,146 Z" transform="rotate(-62 100 146) translate(100 146) scale(0.78) translate(-100 -146)" fill="#b2e7fd" stroke="#154e6b" stroke-width="3"/><path d="M100,146 C86,118 86,86 100,58 C114,86 114,118 100,146 Z" transform="rotate(62 100 146) translate(100 146) scale(0.78) translate(-100 -146)" fill="#b2e7fd" stroke="#154e6b" stroke-width="3"/><path d="M100,146 C86,118 86,86 100,58 C114,86 114,118 100,146 Z" transform="rotate(-32 100 146) translate(100 146) scale(0.92) translate(-100 -146)" fill="url(#m)" stroke="#154e6b" stroke-width="3"/><path d="M100,146 C86,118 86,86 100,58 C114,86 114,118 100,146 Z" transform="rotate(32 100 146) translate(100 146) scale(0.92) translate(-100 -146)" fill="url(#m)" stroke="#154e6b" stroke-width="3"/><path d="M100,146 C86,118 86,86 100,58 C114,86 114,118 100,146 Z" transform="rotate(0 100 146) translate(100 146) scale(1.0) translate(-100 -146)" fill="url(#m)" stroke="#154e6b" stroke-width="3"/>
+<path d="M100,138 L100,90" stroke="#fff" stroke-opacity=".5" stroke-width="2.5"/>
+<path d="M44,156 Q72,144 100,156 T156,156" fill="none" stroke="#154e6b" stroke-width="4"/>
+<path d="M54,170 Q77,160 100,170 T146,170" fill="none" stroke="#3fa7d6" stroke-width="3.5"/>
+</g>
+</svg>
