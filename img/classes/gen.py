@@ -234,6 +234,441 @@ def wizard(c):
 <path d="M100,88 V106" stroke="{l}" stroke-opacity=".7" stroke-width="2" stroke-dasharray="2 4"/>''')
 
 
+
+# ---------- Підкласи (архетипи): власна емблема й палітра ----------
+import math
+
+
+def star(cx, cy, R, r, n=4, rot=-90):
+    pts = []
+    for i in range(n * 2):
+        a = math.radians(rot + i * 180 / n)
+        rr = R if i % 2 == 0 else r
+        pts.append(f'{cx + rr * math.cos(a):.1f},{cy + rr * math.sin(a):.1f}')
+    return 'M' + ' L'.join(pts) + ' Z'
+
+
+def g(tx, ty, sc, body, rot=0):
+    return f'<g transform="translate({tx} {ty}) rotate({rot}) scale({sc}) translate(-100 -100)">{body}</g>'
+
+
+def inner(svg):
+    # вміст емблеми класу без рамки (для повторного використання)
+    return svg.split('<g stroke-linejoin="round" stroke-linecap="round">')[1].rsplit('</g>', 1)[0]
+
+
+FLAME = 'M100,176 C62,172 50,136 66,106 C72,94 72,80 66,64 C88,72 96,90 94,106 C104,90 114,66 104,26 C142,52 158,96 148,130 C142,156 126,174 100,176 Z'
+FLAME_IN = 'M100,166 C80,162 74,142 84,124 C88,132 94,136 98,134 C96,120 102,104 112,94 C126,116 130,140 122,154 C116,162 110,166 100,166 Z'
+LEAF = 'M100,168 C62,132 64,74 100,32 C136,74 138,132 100,168 Z'
+HEART = 'M100,158 C58,128 46,96 64,74 C78,58 98,64 100,82 C102,64 122,58 136,74 C154,96 142,128 100,158 Z'
+BOLT = 'M112,30 L68,110 L96,110 L84,170 L134,84 L106,84 Z'
+DROP = 'M100,56 C114,78 128,96 128,116 A28,28 0 0 1 72,116 C72,96 86,78 100,56 Z'
+SKULL = 'M100,46 C68,46 52,70 54,96 C55,110 62,120 70,124 L70,146 L84,146 L84,136 L93,136 L93,148 L107,148 L107,136 L116,136 L116,146 L130,146 L130,124 C138,120 145,110 146,96 C148,70 132,46 100,46 Z'
+SHIELD = 'M100,40 L150,54 C150,108 134,142 100,164 C66,142 50,108 50,54 Z'
+CLOUD = 'M58,118 C40,118 36,94 54,90 C52,70 76,60 90,72 C96,52 128,52 132,74 C150,68 164,84 156,100 C170,104 166,122 150,122 L62,122 Z'
+PAW_PAD = 'M100,170 C78,170 66,156 70,140 C74,124 88,116 100,116 C112,116 126,124 130,140 C134,156 122,170 100,170 Z'
+
+
+def crescent(cx, cy, r, k=.84, off=.42):
+    # півмісяць, відкритий праворуч: зовнішнє коло мінус зміщене внутрішнє
+    r2, o = r * k, r * off
+    x = (r * r - r2 * r2 + o * o) / (2 * o)
+    y = math.sqrt(max(r * r - x * x, 0))
+    small = 1 if x - o > 0 else 0
+    return (f'M{cx + x:.1f},{cy - y:.1f} A{r},{r} 0 1 0 {cx + x:.1f},{cy + y:.1f} '
+            f'A{r2:.1f},{r2:.1f} 0 {small} 1 {cx + x:.1f},{cy - y:.1f} Z')
+
+
+def paw(c, cx=100, cy=100, sc=1):
+    b, l, d = c
+    toes = ''.join(f'<ellipse cx="{x}" cy="{y}" rx="13" ry="17" transform="rotate({rt} {x} {y})"/>' for x, y, rt in [(64, 104, -25), (86, 82, -8), (114, 82, 8), (136, 104, 25)])
+    return g(cx, cy, sc, f'<g fill="url(#m)" stroke="{d}" stroke-width="3">{toes}<path d="{PAW_PAD}"/></g>')
+
+
+def book(c, y=0):
+    b, l, d = c
+    return (f'<g transform="translate(0 {y})">'
+            f'<path d="M100,118 C82,108 58,108 36,114 L40,160 C62,154 84,156 100,164 C116,156 138,154 160,160 L164,114 C142,108 118,108 100,118 Z" fill="{b}" stroke="{d}" stroke-width="3"/>'
+            f'<path d="M100,112 C82,100 60,100 42,106 L44,150 C64,144 84,146 100,156 Z" fill="#f4ecd8" stroke="{d}" stroke-width="2.5"/>'
+            f'<path d="M100,112 C118,100 140,100 158,106 L156,150 C136,144 116,146 100,156 Z" fill="#fbf5e6" stroke="{d}" stroke-width="2.5"/>'
+            f'<g stroke="{d}" stroke-opacity=".35" stroke-width="2"><path d="M54,118 C66,115 78,116 90,120 M54,128 C66,125 78,126 90,130 M54,138 C66,135 78,136 90,140"/>'
+            f'<path d="M110,120 C122,116 134,115 146,118 M110,130 C122,126 134,125 146,128 M110,140 C122,136 134,135 146,138"/></g>'
+            f'<path d="M100,112 V156" stroke="{d}" stroke-width="2.5"/></g>')
+
+
+def school(c, sym):
+    return frame(c, f'{book(c, 12)}<g transform="translate(0 -4)">{sym}</g>')
+
+
+# --- маг: школи ---
+def w_abjuration(c):
+    b, l, d = c
+    return school(c, f'<circle cx="100" cy="58" r="42" fill="none" stroke="{l}" stroke-opacity=".6" stroke-width="2" stroke-dasharray="4 4"/>'
+                     f'<path d="M100,22 L130,31 C130,64 120,84 100,96 C80,84 70,64 70,31 Z" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                     f'<path d="{star(100, 56, 15, 5)}" fill="#fff" stroke="{d}" stroke-width="1.5"/>')
+
+
+def w_conjuration(c):
+    b, l, d = c
+    sp = 'M100,58 m-4,0 a4,4 0 1 1 8,0 a10,10 0 1 1 -18,2 a16,16 0 1 1 30,-6 a24,24 0 1 1 -40,10 a32,32 0 1 1 52,-14'
+    return school(c, f'<circle cx="100" cy="58" r="36" fill="url(#m)" fill-opacity=".35" stroke="{d}" stroke-width="2.5"/>'
+                     f'<path d="{sp}" fill="none" stroke="{d}" stroke-width="6"/><path d="{sp}" fill="none" stroke="{l}" stroke-width="3"/>'
+                     f'<g fill="{l}"><path d="{star(148, 32, 8, 2.4)}"/><path d="{star(54, 84, 6, 2)}"/></g>')
+
+
+def w_divination(c):
+    b, l, d = c
+    return school(c, f'<path d="M80,94 L120,94 L127,106 L73,106 Z" fill="{WOOD[0]}" stroke="{WOOD[2]}" stroke-width="2.5"/>'
+                     f'<circle cx="100" cy="62" r="34" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                     f'<path d="M78,62 C87,51 113,51 122,62 C113,73 87,73 78,62 Z" fill="#fff" stroke="{d}" stroke-width="2"/><circle cx="100" cy="62" r="6.5" fill="{d}"/>'
+                     f'<path d="M82,44 C87,38 95,35 102,35" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="3"/>')
+
+
+def w_enchantment(c):
+    b, l, d = c
+    return school(c, g(100, 60, .52, f'<path d="{HEART}" fill="url(#m)" stroke="{d}" stroke-width="5.5"/><path d="M76,86 C72,98 76,110 86,118" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="5"/>')
+                  + f'<g fill="{l}" stroke="{d}" stroke-width="1"><path d="{star(56, 40, 9, 2.7)}"/><path d="{star(146, 50, 10, 3)}"/><path d="{star(136, 90, 6, 2)}"/></g>')
+
+
+def w_evocation(c):
+    b, l, d = c
+    rays = ''.join(f'<path d="M100,16 L105,30 L95,30 Z" transform="rotate({a} 100 60)"/>' for a in range(0, 360, 45))
+    return school(c, f'<g fill="{l}" opacity=".9">{rays}</g><circle cx="100" cy="60" r="28" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                  + g(100, 60, .34, f'<path d="{FLAME}" fill="#fff6c8" stroke="{d}" stroke-width="6"/>'))
+
+
+def w_illusion(c):
+    b, l, d = c
+    return school(c, f'<path d="M98,22 L132,86 L64,86 Z" fill="url(#m)" fill-opacity=".9" stroke="{d}" stroke-width="3"/>'
+                     f'<path d="M98,22 L98,86 M81,54 L115,54" stroke="#fff" stroke-opacity=".5" stroke-width="2"/>'
+                     f'<path d="M36,62 L82,56" stroke="#fff" stroke-width="3.5"/>'
+                     f'<g stroke-width="4" fill="none"><path d="M118,58 L162,46" stroke="#ff7a7a"/><path d="M121,64 L166,62" stroke="#ffd36a"/><path d="M123,70 L164,78" stroke="#6ae0a0"/><path d="M125,76 L158,94" stroke="#7ab8ff"/></g>')
+
+
+def w_necromancy(c):
+    b, l, d = c
+    return school(c, g(100, 56, .5, f'<path d="{SKULL}" fill="url(#m)" stroke="{d}" stroke-width="6"/><ellipse cx="82" cy="96" rx="11" ry="13" fill="{d}"/><ellipse cx="118" cy="96" rx="11" ry="13" fill="{d}"/><path d="M100,108 L94,122 L106,122 Z" fill="{d}"/>')
+                  + f'<g fill="none" stroke="{l}" stroke-width="2.5" stroke-opacity=".75"><path d="M54,26 C46,42 58,50 50,66"/><path d="M146,26 C154,42 142,50 150,66"/></g>')
+
+
+def w_transmutation(c):
+    b, l, d = c
+    flask = 'M92,22 L108,22 L108,44 C126,50 134,64 132,78 C130,92 116,98 100,98 C84,98 70,92 68,78 C66,64 74,50 92,44 Z'
+    liquid = 'M70,72 C82,68 92,76 100,74 C110,72 120,66 131,72 C130,88 116,96 100,96 C84,96 70,88 70,72 Z'
+    return school(c, f'<path d="{flask}" fill="#eef6ff" fill-opacity=".9"/><path d="{liquid}" fill="url(#m)"/><path d="{flask}" fill="none" stroke="{d}" stroke-width="3"/>'
+                     f'<rect x="87" y="15" width="26" height="9" rx="3" fill="{WOOD[0]}" stroke="{WOOD[2]}" stroke-width="2"/>'
+                     f'<g fill="#fff" fill-opacity=".85"><circle cx="92" cy="82" r="3"/><circle cx="106" cy="86" r="2.2"/><circle cx="114" cy="78" r="2.6"/></g>'
+                     f'<path d="M142,36 C156,44 158,60 148,72 M150,62 L148,72 L138,68" fill="none" stroke="{l}" stroke-width="3"/>'
+                     f'<path d="M58,72 C44,64 42,48 52,36 M50,46 L52,36 L62,40" fill="none" stroke="{l}" stroke-width="3"/>')
+
+
+# --- варвар ---
+def b_berserker(c):
+    b, l, d = c
+    blade = 'M104,64 L138,46 Q164,84 138,122 L104,104 Q116,84 104,64 Z'
+    axe = (f'<rect x="95" y="44" width="10" height="122" rx="4" fill="url(#wd)" stroke="{WOOD[2]}" stroke-width="2.5"/>'
+           f'<path d="{blade}" fill="url(#m)" stroke="{d}" stroke-width="3"/><path d="M136,54 Q152,84 136,114" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3"/>')
+    return frame(c, g(124, 100, .78, axe, 22) + g(76, 100, .78, f'<g transform="translate(200 0) scale(-1 1)">{axe}</g>', -22)
+                 + f'<path d="M84,40 L92,54 M100,34 L100,52 M116,40 L108,54" stroke="{l}" stroke-width="4"/>')
+
+
+def b_totem(c):
+    b, l, d = c
+    feather = 'M100,30 C116,52 118,84 104,112 L100,128 L96,112 C82,84 84,52 100,30 Z'
+    fs = ''.join(g(100, 128, 1, f'<path d="{feather}" fill="url(#m)" stroke="{d}" stroke-width="2.5"/><path d="M100,36 V122" stroke="{d}" stroke-opacity=".5" stroke-width="1.5"/>', a) for a in (-40, 40))
+    return frame(c, fs + paw(c, 100, 104, .64)
+                 + f'<path d="M62,152 L138,152" stroke="{WOOD[2]}" stroke-width="5"/><g fill="#3fb4a4" stroke="{d}" stroke-width="1.5"><circle cx="76" cy="152" r="5"/><circle cx="100" cy="152" r="6"/><circle cx="124" cy="152" r="5"/></g>')
+
+
+# --- бард ---
+def bd_lore(c):
+    b, l, d = c
+    quill = 'M140,28 C122,40 100,66 86,104 L90,108 C108,78 130,54 148,34 Z'
+    return frame(c, '<g transform="rotate(-6 100 110)">'
+                    f'<path d="M52,70 L148,70 L148,150 L52,150 Z" fill="#f6eedb" stroke="{d}" stroke-width="3"/>'
+                    f'<rect x="44" y="62" width="112" height="14" rx="7" fill="url(#m)" stroke="{d}" stroke-width="2.5"/><rect x="44" y="144" width="112" height="14" rx="7" fill="url(#m)" stroke="{d}" stroke-width="2.5"/>'
+                    f'<g stroke="{d}" stroke-opacity=".4" stroke-width="2.5"><path d="M62,92 H118 M62,104 H112 M62,116 H104 M62,128 H120"/></g>'
+                    f'<g stroke="{b}" stroke-width="2.5"><path d="M128,112 v-18 l12,-4 v18" fill="none"/><ellipse cx="125" cy="113" rx="4.5" ry="3.2" fill="{b}"/><ellipse cx="137" cy="109" rx="4.5" ry="3.2" fill="{b}"/></g></g>'
+                    f'<path d="{quill}" fill="#fff" stroke="{d}" stroke-width="2.5"/><path d="M88,106 L78,124" stroke="{d}" stroke-width="3"/>'
+                    f'<path d="M142,34 C126,48 108,72 96,96" stroke="{l}" stroke-width="1.5" fill="none"/>')
+
+
+def bd_valor(c):
+    return frame(c, sword(100, 140, 116, 34) + g(96, 104, .8, inner(bard(c)), -4))
+
+
+# --- жрець ---
+def c_knowledge(c):
+    b, l, d = c
+    return frame(c, book(c, 8) + f'<path d="M100,26 L132,44 L132,80 L100,98 L68,80 L68,44 Z" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                    f'<circle cx="100" cy="52" r="10" fill="#fff" stroke="{d}" stroke-width="2.5"/><path d="M100,62 V86 M100,76 H109 M100,83 H107" stroke="{d}" stroke-width="4"/>')
+
+
+def c_life(c):
+    b, l, d = c
+    return frame(c, f'<path d="{HEART}" fill="url(#m)" stroke="{d}" stroke-width="3.5"/><path d="M74,88 C70,100 76,114 86,122" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="3"/>'
+                    f'<path d="M92,80 h16 v14 h14 v16 h-14 v14 h-16 v-14 h-14 v-16 h14 Z" fill="#fff" stroke="{d}" stroke-width="2.5"/>'
+                    f'<g fill="#7bd38a" stroke="#1f5a22" stroke-width="5">' + g(60, 154, .3, f'<path d="{LEAF}"/>', -58) + g(140, 154, .3, f'<path d="{LEAF}"/>', 58) + '</g>')
+
+
+def c_nature(c):
+    b, l, d = c
+    a = 'M92,96 C80,80 70,66 72,44 M78,72 C66,68 58,58 56,46 M74,56 C80,48 82,40 80,30'
+    ant = f'<path d="{a}" fill="none" stroke="{WOOD[2]}" stroke-width="9"/><path d="{a}" fill="none" stroke="{WOOD[1]}" stroke-width="5"/>'
+    return frame(c, ant + f'<g transform="translate(200 0) scale(-1 1)">{ant}</g>'
+                 + g(100, 122, .54, f'<path d="{LEAF}" fill="url(#m)" stroke="{d}" stroke-width="5"/><path d="M100,166 L100,46" stroke="{d}" stroke-opacity=".5" stroke-width="3"/>'))
+
+
+def c_tempest(c):
+    b, l, d = c
+    return frame(c, f'<path d="{CLOUD}" fill="#dfe8f2" stroke="{d}" stroke-width="3" transform="translate(0 -28)"/>'
+                 + g(104, 122, .62, f'<path d="{BOLT}" fill="url(#m)" stroke="{d}" stroke-width="5"/>')
+                 + f'<g stroke="{l}" stroke-width="3"><path d="M62,112 L54,128 M146,110 L138,126 M72,128 L66,140"/></g>')
+
+
+def c_trickery(c):
+    b, l, d = c
+    mask = 'M60,58 C80,50 120,50 140,58 C146,96 132,130 100,142 C68,130 54,96 60,58 Z'
+    eyes = 'M80,84 C86,78 94,80 96,88 C90,90 84,90 80,84 Z M120,84 C114,78 106,80 104,88 C110,90 116,90 120,84 Z'
+    return frame(c, g(120, 104, .72, f'<path d="{mask}" fill="#3a2440" stroke="{d}" stroke-width="4"/><path d="{eyes}" fill="#fff"/><path d="M80,120 C92,110 108,110 120,120" fill="none" stroke="#fff" stroke-width="4"/>', 16)
+                 + g(82, 98, .78, f'<path d="{mask}" fill="url(#m)" stroke="{d}" stroke-width="4"/><path d="{eyes}" fill="{d}"/><path d="M80,110 C92,122 108,122 120,110" fill="none" stroke="{d}" stroke-width="4"/>', -12)
+                 + f'<g fill="{l}"><path d="{star(150, 48, 8, 2.5)}"/><path d="{star(46, 150, 6, 2)}"/></g>')
+
+
+def c_war(c):
+    b, l, d = c
+    return frame(c, '<g transform="rotate(-28 100 100)">'
+                    f'<path d="M98,26 V176" stroke="{WOOD[2]}" stroke-width="8"/><path d="M98,26 V176" stroke="{WOOD[1]}" stroke-width="4"/>'
+                    f'<path d="M98,12 L106,30 L90,30 Z" fill="url(#st)" stroke="{STEEL[2]}" stroke-width="2.5"/>'
+                    f'<path d="M100,36 L150,40 L138,56 L150,72 L100,68 Z" fill="url(#m)" stroke="{d}" stroke-width="3"/></g>'
+                 + sword(112, 136, 100, 26)
+                 + g(100, 130, .46, f'<path d="{SHIELD}" fill="url(#m)" stroke="{d}" stroke-width="6"/><path d="{star(100, 98, 28, 10, 4)}" fill="#fff" stroke="{d}" stroke-width="3"/>'))
+
+
+# --- друїд ---
+def d_land(c):
+    b, l, d = c
+    return frame(c, f'<circle cx="146" cy="46" r="11" fill="#ffe08a" stroke="{d}" stroke-width="2"/>'
+                    f'<path d="M30,150 L76,76 L98,108 L120,60 L170,150 Z" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                    f'<path d="M120,60 L133,82 L124,79 L118,90 L110,80 L104,84 Z M76,76 L87,93 L80,90 L74,99 L67,90 Z" fill="#fff" stroke="{d}" stroke-width="1.5"/>'
+                    f'<rect x="96" y="122" width="8" height="28" fill="{WOOD[0]}" stroke="{WOOD[2]}" stroke-width="2"/>'
+                    f'<circle cx="100" cy="114" r="18" fill="#6fbf5a" stroke="#1f5a22" stroke-width="2.5"/><path d="M30,150 L170,150" stroke="{d}" stroke-width="3"/>')
+
+
+def d_moon(c):
+    b, l, d = c
+    return frame(c, f'<path d="{crescent(94, 86, 56)}" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                    f'<g fill="{l}"><path d="{star(148, 50, 9, 2.7)}"/><path d="{star(152, 96, 5, 1.6)}"/><path d="{star(126, 30, 4, 1.4)}"/></g>'
+                 + paw(c, 130, 134, .44))
+
+
+# --- воїн ---
+def f_champion(c):
+    b, l, d = c
+    leaves = ''
+    for side in (-1, 1):
+        for i in range(7):
+            ang = 112 + i * 21 if side < 0 else 68 - i * 21
+            a = math.radians(ang)
+            x, y = 100 + 64 * math.cos(a), 100 + 64 * math.sin(a)
+            leaves += f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="6.5" ry="14" transform="rotate({ang + 90 + side * 28:.0f} {x:.1f} {y:.1f})"/>'
+    return frame(c, f'<g fill="#9ccc65" stroke="#33691e" stroke-width="2">{leaves}</g>' + sword(100, 128, 104, 0, guard=b, dark=d)
+                 + f'<path d="{star(100, 30, 9, 3.2, 5)}" fill="{l}" stroke="{d}" stroke-width="1.5"/>')
+
+
+def f_battle_master(c):
+    b, l, d = c
+    return frame(c, f'<path d="M70,30 V172" stroke="{WOOD[2]}" stroke-width="8"/><path d="M70,30 V172" stroke="{WOOD[1]}" stroke-width="4"/><circle cx="70" cy="27" r="6" fill="#c9a227" stroke="{d}" stroke-width="2"/>'
+                    f'<path d="M74,38 C100,30 124,46 152,38 L152,98 C124,106 100,90 74,98 Z" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                    f'<path d="{star(113, 68, 17, 7, 4)}" fill="#fff" stroke="{d}" stroke-width="1.5"/>'
+                 + g(126, 138, .42, f'<path d="{SHIELD}" fill="{STEEL[0]}" stroke="{STEEL[2]}" stroke-width="6"/><path d="M62,86 L100,116 L138,86" fill="none" stroke="{b}" stroke-width="13"/>'))
+
+
+def f_eldritch_knight(c):
+    b, l, d = c
+    runes = ''.join(f'<path d="{star(100 + 58 * math.cos(math.radians(a)), 100 + 58 * math.sin(math.radians(a)), 7, 2.2)}"/>' for a in range(-90, 270, 60))
+    return frame(c, f'<circle cx="100" cy="100" r="58" fill="none" stroke="{l}" stroke-width="2.5" stroke-dasharray="5 5"/>'
+                    f'<path d="{star(100, 100, 50, 24, 6, -90)}" fill="url(#m)" fill-opacity=".3" stroke="{b}" stroke-width="2"/><g fill="{l}">{runes}</g>'
+                 + sword(100, 136, 112, 0, blade='url(#m)', dark=d, guard='#c9a227'))
+
+
+# --- монах ---
+def m_open_hand(c):
+    b, l, d = c
+    fingers = ''.join(f'<rect x="{x}" y="{y}" width="17" height="{h}" rx="8.5" transform="rotate({r} {x + 8} {y + h})"/>'
+                      for x, y, h, r in [(66, 52, 54, -10), (84, 38, 66, -3), (102, 40, 64, 3), (120, 54, 52, 10)])
+    return frame(c, f'<circle cx="100" cy="104" r="66" fill="none" stroke="{l}" stroke-width="2" stroke-opacity=".5"/>'
+                    f'<g fill="url(#m)" stroke="{d}" stroke-width="3">{fingers}<rect x="52" y="88" width="18" height="48" rx="9" transform="rotate(-38 61 134)"/>'
+                    f'<path d="M66,100 L138,100 L140,140 C138,160 120,172 100,172 C80,172 64,160 64,140 Z"/></g>'
+                    f'<circle cx="102" cy="134" r="11" fill="none" stroke="{d}" stroke-width="2.5"/><path d="M102,123 C97,130 107,138 102,145" fill="none" stroke="{d}" stroke-width="2"/>')
+
+
+def m_shadow(c):
+    b, l, d = c
+    return frame(c, f'<path d="{crescent(100, 100, 68, .84)}" fill="{d}" stroke="{b}" stroke-width="2.5"/>'
+                    f'<path d="{star(106, 100, 48, 12, 4, -45)}" fill="url(#st)" stroke="{STEEL[2]}" stroke-width="3"/><circle cx="106" cy="100" r="8" fill="{d}" stroke="{STEEL[2]}" stroke-width="2.5"/>'
+                    f'<g fill="{l}" opacity=".85"><path d="{star(50, 54, 6, 2)}"/><path d="{star(152, 154, 5, 1.6)}"/></g>')
+
+
+def m_four_elements(c):
+    b, l, d = c
+    return frame(c, f'<circle cx="100" cy="100" r="52" fill="none" stroke="{l}" stroke-width="2" stroke-dasharray="3 6"/>'
+                    f'<circle cx="100" cy="100" r="22" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                 + g(100, 46, .32, f'<path d="{FLAME}" fill="#ff8a3d" stroke="#7a2a08" stroke-width="7"/>')
+                 + g(154, 98, .38, f'<path d="{DROP}" fill="#4fb3ff" stroke="#0d4a7a" stroke-width="6"/>')
+                 + '<g transform="translate(100 154)"><path d="M-22,6 L-12,-12 L4,-14 L20,-4 L18,12 L-4,16 Z" fill="#b08a5a" stroke="#4a3418" stroke-width="2.5"/></g>'
+                 + '<g transform="translate(48 100)" fill="none" stroke="#e8f4ff" stroke-width="4"><path d="M-18,-6 C-6,-14 8,-12 10,-4 C12,4 2,8 -4,2"/><path d="M-18,8 C-4,4 10,8 18,14"/></g>')
+
+
+# --- паладин ---
+def p_ancients(c):
+    b, l, d = c
+    canopy = ''.join(f'<circle cx="{x}" cy="{y}" r="{r}"/>' for x, y, r in [(100, 62, 30), (70, 84, 24), (130, 84, 24), (84, 108, 20), (116, 108, 20)])
+    return frame(c, f'<rect x="94" y="110" width="12" height="46" fill="{WOOD[0]}" stroke="{WOOD[2]}" stroke-width="2.5"/>'
+                    f'<path d="M100,156 C90,162 80,164 70,164 M100,156 C110,162 120,164 130,164" fill="none" stroke="{WOOD[2]}" stroke-width="4"/>'
+                    f'<g fill="url(#m)" stroke="{d}" stroke-width="3">{canopy}</g><g fill="url(#m)">{canopy.replace("r=", "data-r=").replace("data-r=", "r=")}</g>'
+                    f'<path d="{star(100, 84, 16, 5, 4)}" fill="#fff8d0" stroke="{d}" stroke-width="1.5"/><g fill="#ffe28a"><circle cx="68" cy="80" r="3"/><circle cx="128" cy="98" r="3"/><circle cx="112" cy="52" r="2.5"/></g>')
+
+
+def p_vengeance(c):
+    return frame(c, g(100, 94, .64, f'<path d="{FLAME}" fill="url(#m)" stroke="{c[2]}" stroke-width="5"/><path d="{FLAME_IN}" fill="#ffd27a" fill-opacity=".85"/>')
+                 + sword(100, 62, 104, 180, guard='#3a3a3a', grip='#1a1a1a', dark='#1a1a1a'))
+
+
+# --- слідопит ---
+def r_beast_master(c):
+    b, l, d = c
+    return frame(c, paw(c, 100, 108, .9)
+                 + f'<path d="M46,46 L68,70 M154,46 L132,70" stroke="{WOOD[1]}" stroke-width="4"/>'
+                   f'<path d="M42,42 L56,44 L44,56 Z M158,42 L144,44 L156,56 Z" fill="url(#st)" stroke="{STEEL[2]}" stroke-width="2"/>')
+
+
+# --- пройдисвіт ---
+def ro_thief(c):
+    b, l, d = c
+    bag = 'M78,72 C60,94 52,126 62,148 C70,164 130,164 138,148 C148,126 140,94 122,72 Z'
+    return frame(c, f'<path d="{bag}" fill="url(#m)" stroke="{d}" stroke-width="3"/><path d="M80,72 C86,62 114,62 120,72 L114,80 L86,80 Z" fill="{b}" stroke="{d}" stroke-width="2.5"/>'
+                    f'<path d="M84,78 C92,84 108,84 116,78" stroke="{d}" stroke-width="4" fill="none"/><path d="M78,96 C70,112 68,128 74,142" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3"/>'
+                    f'<g fill="#f2c94c" stroke="#7a5a10" stroke-width="2.5"><ellipse cx="146" cy="152" rx="16" ry="7"/><ellipse cx="146" cy="144" rx="16" ry="7"/><ellipse cx="150" cy="136" rx="16" ry="7"/></g>'
+                    f'<g transform="rotate(-30 70 50)"><circle cx="56" cy="50" r="10" fill="none" stroke="{STEEL[2]}" stroke-width="6"/><circle cx="56" cy="50" r="10" fill="none" stroke="{STEEL[0]}" stroke-width="3"/>'
+                    f'<path d="M66,50 H100 M92,50 V59 M98,50 V57" stroke="{STEEL[2]}" stroke-width="5"/><path d="M66,50 H100" stroke="{STEEL[0]}" stroke-width="2"/></g>'
+                    f'<circle cx="100" cy="118" r="13" fill="{l}" stroke="{d}" stroke-width="2.5"/><path d="{star(100, 118, 8, 3, 4)}" fill="{d}"/>')
+
+
+def ro_assassin(c):
+    b, l, d = c
+    hood = 'M100,30 C66,30 46,62 48,100 C50,128 60,150 74,162 L126,162 C140,150 150,128 152,100 C154,62 134,30 100,30 Z'
+    return frame(c, f'<path d="{hood}" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                    f'<path d="M100,58 C78,58 68,82 70,106 C72,124 84,138 100,140 C116,138 128,124 130,106 C132,82 122,58 100,58 Z" fill="#111" stroke="{d}" stroke-width="2"/>'
+                    f'<path d="M80,98 L94,103 M120,98 L106,103" stroke="{l}" stroke-width="4"/>'
+                    '<g transform="rotate(-140 132 140)">'
+                    f'<path d="M128,140 L128,104 L132,90 L136,104 L136,140 Z" fill="url(#st)" stroke="{STEEL[2]}" stroke-width="2"/><rect x="120" y="140" width="24" height="5" rx="2" fill="{d}"/><rect x="129" y="145" width="6" height="16" rx="2" fill="{d}"/></g>'
+                 + g(152, 156, .22, f'<path d="{DROP}" fill="#7ee36a" stroke="#1d5a10" stroke-width="10"/>'))
+
+
+def ro_arcane_trickster(c):
+    b, l, d = c
+    return frame(c, f'<circle cx="100" cy="100" r="66" fill="none" stroke="{l}" stroke-width="2" stroke-dasharray="3 6"/>' + inner(rogue(c))
+                 + f'<g fill="{l}" stroke="{d}" stroke-width="1"><path d="{star(52, 50, 11, 3.2)}"/><path d="{star(150, 56, 8, 2.4)}"/><path d="{star(58, 152, 7, 2.2)}"/></g>')
+
+
+# --- чародій ---
+def s_draconic(c):
+    b, l, d = c
+    scale = 'M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z'
+    sc = ''.join(f'<path d="{scale}" transform="translate({x} {y})"/>' for x, y in [(80, 76), (120, 76), (60, 106), (100, 106), (140, 106), (80, 136), (120, 136)])
+    return frame(c, f'<g fill="url(#m)" stroke="{d}" stroke-width="2.5">{sc}</g>'
+                    f'<path d="M98,42 C110,32 126,30 140,34 C128,38 120,46 118,56 Z M102,42 C90,32 74,30 60,34 C72,38 80,46 82,56 Z" fill="{d}" stroke="{l}" stroke-width="1.5"/>'
+                    f'<path d="M76,164 L86,150 M100,168 L100,152 M124,164 L114,150" stroke="{l}" stroke-width="4"/>')
+
+
+def s_wild(c):
+    b, l, d = c
+    defs = '<linearGradient id="rb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff6ad5"/><stop offset=".35" stop-color="#ffd36a"/><stop offset=".65" stop-color="#6affc8"/><stop offset="1" stop-color="#6aa8ff"/></linearGradient>'
+    sp = 'M100,100 m-6,0 a6,6 0 1 1 12,0 a14,14 0 1 1 -26,4 a22,22 0 1 1 42,-10 a32,32 0 1 1 -58,16 a42,42 0 1 1 78,-22'
+    return frame(c, f'<path d="{star(100, 100, 76, 34, 7, -80)}" fill="url(#m)" fill-opacity=".35" stroke="{b}" stroke-width="2"/>'
+                    f'<path d="{sp}" fill="none" stroke="{d}" stroke-width="9"/><path d="{sp}" fill="none" stroke="url(#rb)" stroke-width="5"/>'
+                    f'<g fill="#fff"><path d="{star(148, 44, 9, 2.7)}"/><path d="{star(50, 152, 7, 2.2)}"/><path d="{star(54, 50, 5, 1.6)}"/></g>', defs)
+
+
+# --- чаклун ---
+def wl_archfey(c):
+    b, l, d = c
+    w1 = 'M100,100 C86,70 60,46 40,52 C26,58 34,90 56,100 C70,106 88,104 100,100 Z'
+    w2 = 'M100,104 C84,112 64,128 62,146 C62,160 82,160 92,146 C98,136 100,120 100,104 Z'
+    wings = (f'<path d="{w1}" fill="url(#m)" stroke="{d}" stroke-width="3"/><path d="{w2}" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+             f'<circle cx="58" cy="74" r="7" fill="#fff" fill-opacity=".7"/><circle cx="78" cy="136" r="5" fill="#fff" fill-opacity=".7"/>')
+    return frame(c, wings + f'<g transform="translate(200 0) scale(-1 1)">{wings}</g><rect x="96" y="70" width="8" height="72" rx="4" fill="{d}"/>'
+                    f'<path d="M98,72 C94,58 86,52 80,50 M102,72 C106,58 114,52 120,50" fill="none" stroke="{d}" stroke-width="2.5"/>'
+                    f'<g fill="#fff"><path d="{star(100, 38, 8, 2.4)}"/><path d="{star(152, 152, 5, 1.6)}"/></g>')
+
+
+def wl_fiend(c):
+    b, l, d = c
+    return frame(c, f'<path d="M58,92 C38,74 36,46 50,26 C54,48 66,62 84,70 Z" fill="#2a0e0e" stroke="{l}" stroke-width="2.5"/>'
+                    f'<path d="M142,92 C162,74 164,46 150,26 C146,48 134,62 116,70 Z" fill="#2a0e0e" stroke="{l}" stroke-width="2.5"/>'
+                 + g(100, 108, .66, f'<path d="{FLAME}" fill="url(#m)" stroke="{d}" stroke-width="5"/><path d="{FLAME_IN}" fill="#ffe08a" fill-opacity=".85"/>'))
+
+
+def wl_great_old_one(c):
+    b, l, d = c
+    tent = ''
+    for x0, cx1, cx2, x1, y1 in [(70, 46, 30, 38, 168), (88, 76, 64, 74, 180), (112, 124, 136, 126, 180), (130, 154, 170, 162, 168)]:
+        path = f'M{x0},116 C{cx1},140 {cx2},150 {x1},{y1}'
+        tent += f'<path d="{path}" fill="none" stroke="{d}" stroke-width="13"/><path d="{path}" fill="none" stroke="url(#m)" stroke-width="7"/>'
+    return frame(c, tent + f'<path d="M30,92 C56,54 144,54 170,92 C144,130 56,130 30,92 Z" fill="{d}" stroke="{b}" stroke-width="3.5"/>'
+                    f'<path d="M40,92 C64,62 136,62 160,92 C136,122 64,122 40,92 Z" fill="#e6fff4"/><circle cx="100" cy="92" r="27" fill="url(#m)" stroke="{d}" stroke-width="3"/>'
+                    f'<path d="M100,70 C108,82 108,102 100,114 C92,102 92,82 100,70 Z" fill="#06140e"/><circle cx="91" cy="83" r="4" fill="#fff" fill-opacity=".85"/>')
+
+
+# палітри підкласів (base, light, dark) і емблеми
+SUB = {
+    'barbarian-berserker': (('#d33a2c', '#ff9c84', '#5c120c'), b_berserker),
+    'barbarian-totem': (('#b8803c', '#f2cf8e', '#4d3010'), b_totem),
+    'bard-lore': (('#5b7fd6', '#c2d1ff', '#1f306b'), bd_lore),
+    'bard-valor': (('#d9893a', '#ffd19a', '#5c3410'), bd_valor),
+    'cleric-knowledge': (('#4a7fd4', '#bcd2ff', '#17336b'), c_knowledge),
+    'cleric-life': (('#e0607a', '#ffc2cf', '#6b1c2c'), c_life),
+    'cleric-light': (('#f2b632', '#fff3c2', '#7a5508'), cleric),
+    'cleric-nature': (('#5aa84a', '#c4ecb6', '#21521a'), c_nature),
+    'cleric-tempest': (('#4fa3e8', '#c4e4ff', '#123e66'), c_tempest),
+    'cleric-trickery': (('#b05cc8', '#ecc2f8', '#4a1a5a'), c_trickery),
+    'cleric-war': (('#c0392b', '#ffa69b', '#4f100a'), c_war),
+    'druid-land': (('#7a9a3a', '#d6e8a2', '#334214'), d_land),
+    'druid-moon': (('#7f9ed8', '#dde7ff', '#25386b'), d_moon),
+    'fighter-champion': (('#d7a03a', '#ffe2a0', '#5e400e'), f_champion),
+    'fighter-battle_master': (('#5d8bbf', '#c6dcf5', '#1e3552'), f_battle_master),
+    'fighter-eldritch_knight': (('#8c6ae0', '#d8cbff', '#33206b'), f_eldritch_knight),
+    'monk-open_hand': (('#e5a03c', '#ffe0a8', '#6b440e'), m_open_hand),
+    'monk-shadow': (('#6a6f9e', '#c9cdf0', '#1c1f3a'), m_shadow),
+    'monk-four_elements': (('#3bb0a0', '#b2f0e6', '#0f4a42'), m_four_elements),
+    'paladin-devotion': (('#e8c45a', '#fff6cf', '#6e5410'), paladin),
+    'paladin-ancients': (('#6fb04a', '#d2f0b8', '#294a16'), p_ancients),
+    'paladin-vengeance': (('#b22a3a', '#ff9aa6', '#4a0c14'), p_vengeance),
+    'ranger-hunter': (('#8d9b3a', '#dbe596', '#3c4414'), ranger),
+    'ranger-beast_master': (('#b8873a', '#f2d29a', '#4f3410'), r_beast_master),
+    'rogue-thief': (('#c8a03c', '#f6e2a4', '#574010'), ro_thief),
+    'rogue-assassin': (('#9e2a3a', '#ff9aa8', '#3a0a12'), ro_assassin),
+    'rogue-arcane_trickster': (('#7e6ad8', '#d4cbff', '#2a1f60'), ro_arcane_trickster),
+    'sorcerer-draconic': (('#e0452e', '#ffb09c', '#5c140a'), s_draconic),
+    'sorcerer-wild': (('#c84fd8', '#f2c4fb', '#4f1458'), s_wild),
+    'warlock-archfey': (('#58c49a', '#c6f5df', '#14503a'), wl_archfey),
+    'warlock-fiend': (('#d63a2a', '#ffb08a', '#4a0e08'), wl_fiend),
+    'warlock-great_old_one': (('#3f9e86', '#bff0e0', '#0f3a30'), wl_great_old_one),
+    'wizard-abjuration': (('#6aa0d8', '#d4e8ff', '#1f3f66'), w_abjuration),
+    'wizard-conjuration': (('#e0a030', '#ffe0a0', '#5e400a'), w_conjuration),
+    'wizard-divination': (('#4fb8d8', '#c8f0ff', '#134a5c'), w_divination),
+    'wizard-enchantment': (('#e06fae', '#ffd0ea', '#6b1d4a'), w_enchantment),
+    'wizard-evocation': (('#e4572e', '#ffbea8', '#5e1a08'), w_evocation),
+    'wizard-illusion': (('#9b7ae6', '#e2d6ff', '#36246e'), w_illusion),
+    'wizard-necromancy': (('#7fb77e', '#d8f2d6', '#1e3a1e'), w_necromancy),
+    'wizard-transmutation': (('#3fb48a', '#c0f2df', '#0f4a36'), w_transmutation),
+}
+for k, (pal, fn) in SUB.items():
+    with open(f'{OUT}/{k}.svg', 'w') as fh:
+        fh.write(fn(pal))
+
+
 FN = dict(barbarian=barbarian, bard=bard, cleric=cleric, druid=druid, fighter=fighter, monk=monk, paladin=paladin,
           ranger=ranger, rogue=rogue, sorcerer=sorcerer, warlock=warlock, wizard=wizard)
 for k, f in FN.items():
@@ -256,4 +691,7 @@ css = []
 for k, (b, l, d) in PAL.items():
     txt = '#ffffff' if contrast(b, '#ffffff') >= contrast(b, '#111111') else '#111111'
     css.append(f"[data-cls={k}] {{ --cls: {b}; --cls-l: {l}; --cls-d: {d}; --cls-text: {txt}; --cls-img: url(img/classes/{k}.svg); }}")
+for k, ((b, l, d), fn) in SUB.items():
+    txt = '#ffffff' if contrast(b, '#ffffff') >= contrast(b, '#111111') else '#111111'
+    css.append(f"[data-sub={k}] {{ --cls: {b}; --cls-l: {l}; --cls-d: {d}; --cls-text: {txt}; --cls-img: url(img/classes/{k}.svg); }}")
 print('\n'.join(css))

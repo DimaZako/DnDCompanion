@@ -651,7 +651,7 @@ async function archiveRows(c, onlyId) {
     const s = JSON.parse(r.sheet);
     const status = !r.alive ? 'dead' : r.room_deleted ? 'closed' : !r.is_member ? 'left' : 'active';
     return { id: r.id, roomId: r.room_id, roomName: r.room_name || '—', status, dead: !r.alive, roomClosed: !!r.room_deleted,
-      name: s.name, classId: s.classId, raceId: s.raceId, raceName: s.raceName || '', level: s.level, subclass: s.subclass || '', createdAt: r.created_at, updatedAt: r.updated_at, sheet: s };
+      name: s.name, classId: s.classId, raceId: s.raceId, raceName: s.raceName || '', level: s.level, subclass: s.subclass || '', subclassId: s.subclassId || '', createdAt: r.created_at, updatedAt: r.updated_at, sheet: s };
   });
 }
 

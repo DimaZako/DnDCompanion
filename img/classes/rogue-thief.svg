@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#c8a03c" stop-opacity=".55"/><stop offset=".6" stop-color="#c8a03c" stop-opacity=".18"/><stop offset="1" stop-color="#c8a03c" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6e2a4"/><stop offset="1" stop-color="#c8a03c"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#c8a03c" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#f6e2a4" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M78,72 C60,94 52,126 62,148 C70,164 130,164 138,148 C148,126 140,94 122,72 Z" fill="url(#m)" stroke="#574010" stroke-width="3"/><path d="M80,72 C86,62 114,62 120,72 L114,80 L86,80 Z" fill="#c8a03c" stroke="#574010" stroke-width="2.5"/><path d="M84,78 C92,84 108,84 116,78" stroke="#574010" stroke-width="4" fill="none"/><path d="M78,96 C70,112 68,128 74,142" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3"/><g fill="#f2c94c" stroke="#7a5a10" stroke-width="2.5"><ellipse cx="146" cy="152" rx="16" ry="7"/><ellipse cx="146" cy="144" rx="16" ry="7"/><ellipse cx="150" cy="136" rx="16" ry="7"/></g><g transform="rotate(-30 70 50)"><circle cx="56" cy="50" r="10" fill="none" stroke="#4a525a" stroke-width="6"/><circle cx="56" cy="50" r="10" fill="none" stroke="#d9dfe6" stroke-width="3"/><path d="M66,50 H100 M92,50 V59 M98,50 V57" stroke="#4a525a" stroke-width="5"/><path d="M66,50 H100" stroke="#d9dfe6" stroke-width="2"/></g><circle cx="100" cy="118" r="13" fill="#f6e2a4" stroke="#574010" stroke-width="2.5"/><path d="M100.0,110.0 L102.1,115.9 L108.0,118.0 L102.1,120.1 L100.0,126.0 L97.9,120.1 L92.0,118.0 L97.9,115.9 Z" fill="#574010"/>
+</g>
+</svg>

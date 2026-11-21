@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#8c6ae0" stop-opacity=".55"/><stop offset=".6" stop-color="#8c6ae0" stop-opacity=".18"/><stop offset="1" stop-color="#8c6ae0" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d8cbff"/><stop offset="1" stop-color="#8c6ae0"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#8c6ae0" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#d8cbff" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<circle cx="100" cy="100" r="58" fill="none" stroke="#d8cbff" stroke-width="2.5" stroke-dasharray="5 5"/><path d="M100.0,50.0 L112.0,79.2 L143.3,75.0 L124.0,100.0 L143.3,125.0 L112.0,120.8 L100.0,150.0 L88.0,120.8 L56.7,125.0 L76.0,100.0 L56.7,75.0 L88.0,79.2 Z" fill="url(#m)" fill-opacity=".3" stroke="#8c6ae0" stroke-width="2"/><g fill="#d8cbff"><path d="M100.0,35.0 L101.6,40.4 L107.0,42.0 L101.6,43.6 L100.0,49.0 L98.4,43.6 L93.0,42.0 L98.4,40.4 Z"/><path d="M150.2,64.0 L151.8,69.4 L157.2,71.0 L151.8,72.6 L150.2,78.0 L148.7,72.6 L143.2,71.0 L148.7,69.4 Z"/><path d="M150.2,122.0 L151.8,127.4 L157.2,129.0 L151.8,130.6 L150.2,136.0 L148.7,130.6 L143.2,129.0 L148.7,127.4 Z"/><path d="M100.0,151.0 L101.6,156.4 L107.0,158.0 L101.6,159.6 L100.0,165.0 L98.4,159.6 L93.0,158.0 L98.4,156.4 Z"/><path d="M49.8,122.0 L51.3,127.4 L56.8,129.0 L51.3,130.6 L49.8,136.0 L48.2,130.6 L42.8,129.0 L48.2,127.4 Z"/><path d="M49.8,64.0 L51.3,69.4 L56.8,71.0 L51.3,72.6 L49.8,78.0 L48.2,72.6 L42.8,71.0 L48.2,69.4 Z"/></g><g transform="rotate(0 100 136)">
+<path d="M94,136 L94,42 L100,24 L106,42 L106,136 Z" fill="url(#m)" stroke="#33206b" stroke-width="2.5"/>
+<path d="M100,30 L100,132" stroke="#33206b" stroke-opacity=".35" stroke-width="1.5"/>
+<rect x="80" y="134" width="40" height="7" rx="3.5" fill="#c9a227" stroke="#33206b" stroke-width="2.5"/>
+<rect x="95.5" y="141" width="9" height="24" rx="3" fill="#4a2a10" stroke="#33206b" stroke-width="2"/>
+<circle cx="100" cy="169" r="6" fill="#c9a227" stroke="#33206b" stroke-width="2.5"/>
+</g>
+</g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#58c49a" stop-opacity=".55"/><stop offset=".6" stop-color="#58c49a" stop-opacity=".18"/><stop offset="1" stop-color="#58c49a" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c6f5df"/><stop offset="1" stop-color="#58c49a"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#58c49a" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#c6f5df" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M100,100 C86,70 60,46 40,52 C26,58 34,90 56,100 C70,106 88,104 100,100 Z" fill="url(#m)" stroke="#14503a" stroke-width="3"/><path d="M100,104 C84,112 64,128 62,146 C62,160 82,160 92,146 C98,136 100,120 100,104 Z" fill="url(#m)" stroke="#14503a" stroke-width="3"/><circle cx="58" cy="74" r="7" fill="#fff" fill-opacity=".7"/><circle cx="78" cy="136" r="5" fill="#fff" fill-opacity=".7"/><g transform="translate(200 0) scale(-1 1)"><path d="M100,100 C86,70 60,46 40,52 C26,58 34,90 56,100 C70,106 88,104 100,100 Z" fill="url(#m)" stroke="#14503a" stroke-width="3"/><path d="M100,104 C84,112 64,128 62,146 C62,160 82,160 92,146 C98,136 100,120 100,104 Z" fill="url(#m)" stroke="#14503a" stroke-width="3"/><circle cx="58" cy="74" r="7" fill="#fff" fill-opacity=".7"/><circle cx="78" cy="136" r="5" fill="#fff" fill-opacity=".7"/></g><rect x="96" y="70" width="8" height="72" rx="4" fill="#14503a"/><path d="M98,72 C94,58 86,52 80,50 M102,72 C106,58 114,52 120,50" fill="none" stroke="#14503a" stroke-width="2.5"/><g fill="#fff"><path d="M100.0,30.0 L101.7,36.3 L108.0,38.0 L101.7,39.7 L100.0,46.0 L98.3,39.7 L92.0,38.0 L98.3,36.3 Z"/><path d="M152.0,147.0 L153.1,150.9 L157.0,152.0 L153.1,153.1 L152.0,157.0 L150.9,153.1 L147.0,152.0 L150.9,150.9 Z"/></g>
+</g>
+</svg>

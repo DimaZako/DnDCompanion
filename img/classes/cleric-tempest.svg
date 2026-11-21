@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#4fa3e8" stop-opacity=".55"/><stop offset=".6" stop-color="#4fa3e8" stop-opacity=".18"/><stop offset="1" stop-color="#4fa3e8" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c4e4ff"/><stop offset="1" stop-color="#4fa3e8"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#4fa3e8" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#c4e4ff" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M58,118 C40,118 36,94 54,90 C52,70 76,60 90,72 C96,52 128,52 132,74 C150,68 164,84 156,100 C170,104 166,122 150,122 L62,122 Z" fill="#dfe8f2" stroke="#123e66" stroke-width="3" transform="translate(0 -28)"/><g transform="translate(104 122) rotate(0) scale(0.62) translate(-100 -100)"><path d="M112,30 L68,110 L96,110 L84,170 L134,84 L106,84 Z" fill="url(#m)" stroke="#123e66" stroke-width="5"/></g><g stroke="#c4e4ff" stroke-width="3"><path d="M62,112 L54,128 M146,110 L138,126 M72,128 L66,140"/></g>
+</g>
+</svg>

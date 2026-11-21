@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#7f9ed8" stop-opacity=".55"/><stop offset=".6" stop-color="#7f9ed8" stop-opacity=".18"/><stop offset="1" stop-color="#7f9ed8" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#dde7ff"/><stop offset="1" stop-color="#7f9ed8"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#7f9ed8" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#dde7ff" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M125.4,39.6 A56,56 0 1 0 125.4,132.4 A47.0,47.0 0 1 1 125.4,39.6 Z" fill="url(#m)" stroke="#25386b" stroke-width="3"/><g fill="#dde7ff"><path d="M148.0,41.0 L149.9,48.1 L157.0,50.0 L149.9,51.9 L148.0,59.0 L146.1,51.9 L139.0,50.0 L146.1,48.1 Z"/><path d="M152.0,91.0 L153.1,94.9 L157.0,96.0 L153.1,97.1 L152.0,101.0 L150.9,97.1 L147.0,96.0 L150.9,94.9 Z"/><path d="M126.0,26.0 L127.0,29.0 L130.0,30.0 L127.0,31.0 L126.0,34.0 L125.0,31.0 L122.0,30.0 L125.0,29.0 Z"/></g><g transform="translate(130 134) rotate(0) scale(0.44) translate(-100 -100)"><g fill="url(#m)" stroke="#25386b" stroke-width="3"><ellipse cx="64" cy="104" rx="13" ry="17" transform="rotate(-25 64 104)"/><ellipse cx="86" cy="82" rx="13" ry="17" transform="rotate(-8 86 82)"/><ellipse cx="114" cy="82" rx="13" ry="17" transform="rotate(8 114 82)"/><ellipse cx="136" cy="104" rx="13" ry="17" transform="rotate(25 136 104)"/><path d="M100,170 C78,170 66,156 70,140 C74,124 88,116 100,116 C112,116 126,124 130,140 C134,156 122,170 100,170 Z"/></g></g>
+</g>
+</svg>

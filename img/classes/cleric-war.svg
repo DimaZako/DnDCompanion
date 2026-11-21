@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#c0392b" stop-opacity=".55"/><stop offset=".6" stop-color="#c0392b" stop-opacity=".18"/><stop offset="1" stop-color="#c0392b" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffa69b"/><stop offset="1" stop-color="#c0392b"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#c0392b" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#ffa69b" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<g transform="rotate(-28 100 100)"><path d="M98,26 V176" stroke="#4a2a10" stroke-width="8"/><path d="M98,26 V176" stroke="#d6a06a" stroke-width="4"/><path d="M98,12 L106,30 L90,30 Z" fill="url(#st)" stroke="#4a525a" stroke-width="2.5"/><path d="M100,36 L150,40 L138,56 L150,72 L100,68 Z" fill="url(#m)" stroke="#4f100a" stroke-width="3"/></g><g transform="rotate(26 112 136)">
+<path d="M106,136 L106,54 L112,36 L118,54 L118,136 Z" fill="url(#st)" stroke="#4a525a" stroke-width="2.5"/>
+<path d="M112,42 L112,132" stroke="#4a525a" stroke-opacity=".35" stroke-width="1.5"/>
+<rect x="92" y="134" width="40" height="7" rx="3.5" fill="#c9a227" stroke="#4a525a" stroke-width="2.5"/>
+<rect x="107.5" y="141" width="9" height="24" rx="3" fill="#4a2a10" stroke="#4a525a" stroke-width="2"/>
+<circle cx="112" cy="169" r="6" fill="#c9a227" stroke="#4a525a" stroke-width="2.5"/>
+</g><g transform="translate(100 130) rotate(0) scale(0.46) translate(-100 -100)"><path d="M100,40 L150,54 C150,108 134,142 100,164 C66,142 50,108 50,54 Z" fill="url(#m)" stroke="#4f100a" stroke-width="6"/><path d="M100.0,70.0 L107.1,90.9 L128.0,98.0 L107.1,105.1 L100.0,126.0 L92.9,105.1 L72.0,98.0 L92.9,90.9 Z" fill="#fff" stroke="#4f100a" stroke-width="3"/></g>
+</g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#e0452e" stop-opacity=".55"/><stop offset=".6" stop-color="#e0452e" stop-opacity=".18"/><stop offset="1" stop-color="#e0452e" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffb09c"/><stop offset="1" stop-color="#e0452e"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#e0452e" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#ffb09c" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<g fill="url(#m)" stroke="#5c140a" stroke-width="2.5"><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(80 76)"/><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(120 76)"/><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(60 106)"/><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(100 106)"/><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(140 106)"/><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(80 136)"/><path d="M0,-16 C14,-16 20,-2 20,8 C12,4 6,8 0,16 C-6,8 -12,4 -20,8 C-20,-2 -14,-16 0,-16 Z" transform="translate(120 136)"/></g><path d="M98,42 C110,32 126,30 140,34 C128,38 120,46 118,56 Z M102,42 C90,32 74,30 60,34 C72,38 80,46 82,56 Z" fill="#5c140a" stroke="#ffb09c" stroke-width="1.5"/><path d="M76,164 L86,150 M100,168 L100,152 M124,164 L114,150" stroke="#ffb09c" stroke-width="4"/>
+</g>
+</svg>

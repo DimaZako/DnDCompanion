@@ -287,6 +287,47 @@ details > summary { cursor: pointer; padding: 6px 0; list-style-position: inside
 [data-cls=sorcerer] { --cls: #20c0d0; --cls-l: #b0f6fc; --cls-d: #0b5560; --cls-text: #111111; --cls-img: url(img/classes/sorcerer.svg); }
 [data-cls=warlock] { --cls: #9b4fd1; --cls-l: #e0bcff; --cls-d: #3d1660; --cls-text: #ffffff; --cls-img: url(img/classes/warlock.svg); }
 [data-cls=wizard] { --cls: #4f6ef0; --cls-l: #c0cbff; --cls-d: #1d2b75; --cls-text: #ffffff; --cls-img: url(img/classes/wizard.svg); }
+/* архетипи (підкласи) — власні кольори й емблеми, перекривають клас */
+[data-sub=barbarian-berserker] { --cls: #d33a2c; --cls-l: #ff9c84; --cls-d: #5c120c; --cls-text: #ffffff; --cls-img: url(img/classes/barbarian-berserker.svg); }
+[data-sub=barbarian-totem] { --cls: #b8803c; --cls-l: #f2cf8e; --cls-d: #4d3010; --cls-text: #111111; --cls-img: url(img/classes/barbarian-totem.svg); }
+[data-sub=bard-lore] { --cls: #5b7fd6; --cls-l: #c2d1ff; --cls-d: #1f306b; --cls-text: #111111; --cls-img: url(img/classes/bard-lore.svg); }
+[data-sub=bard-valor] { --cls: #d9893a; --cls-l: #ffd19a; --cls-d: #5c3410; --cls-text: #111111; --cls-img: url(img/classes/bard-valor.svg); }
+[data-sub=cleric-knowledge] { --cls: #4a7fd4; --cls-l: #bcd2ff; --cls-d: #17336b; --cls-text: #111111; --cls-img: url(img/classes/cleric-knowledge.svg); }
+[data-sub=cleric-life] { --cls: #e0607a; --cls-l: #ffc2cf; --cls-d: #6b1c2c; --cls-text: #111111; --cls-img: url(img/classes/cleric-life.svg); }
+[data-sub=cleric-light] { --cls: #f2b632; --cls-l: #fff3c2; --cls-d: #7a5508; --cls-text: #111111; --cls-img: url(img/classes/cleric-light.svg); }
+[data-sub=cleric-nature] { --cls: #5aa84a; --cls-l: #c4ecb6; --cls-d: #21521a; --cls-text: #111111; --cls-img: url(img/classes/cleric-nature.svg); }
+[data-sub=cleric-tempest] { --cls: #4fa3e8; --cls-l: #c4e4ff; --cls-d: #123e66; --cls-text: #111111; --cls-img: url(img/classes/cleric-tempest.svg); }
+[data-sub=cleric-trickery] { --cls: #b05cc8; --cls-l: #ecc2f8; --cls-d: #4a1a5a; --cls-text: #111111; --cls-img: url(img/classes/cleric-trickery.svg); }
+[data-sub=cleric-war] { --cls: #c0392b; --cls-l: #ffa69b; --cls-d: #4f100a; --cls-text: #ffffff; --cls-img: url(img/classes/cleric-war.svg); }
+[data-sub=druid-land] { --cls: #7a9a3a; --cls-l: #d6e8a2; --cls-d: #334214; --cls-text: #111111; --cls-img: url(img/classes/druid-land.svg); }
+[data-sub=druid-moon] { --cls: #7f9ed8; --cls-l: #dde7ff; --cls-d: #25386b; --cls-text: #111111; --cls-img: url(img/classes/druid-moon.svg); }
+[data-sub=fighter-champion] { --cls: #d7a03a; --cls-l: #ffe2a0; --cls-d: #5e400e; --cls-text: #111111; --cls-img: url(img/classes/fighter-champion.svg); }
+[data-sub=fighter-battle_master] { --cls: #5d8bbf; --cls-l: #c6dcf5; --cls-d: #1e3552; --cls-text: #111111; --cls-img: url(img/classes/fighter-battle_master.svg); }
+[data-sub=fighter-eldritch_knight] { --cls: #8c6ae0; --cls-l: #d8cbff; --cls-d: #33206b; --cls-text: #111111; --cls-img: url(img/classes/fighter-eldritch_knight.svg); }
+[data-sub=monk-open_hand] { --cls: #e5a03c; --cls-l: #ffe0a8; --cls-d: #6b440e; --cls-text: #111111; --cls-img: url(img/classes/monk-open_hand.svg); }
+[data-sub=monk-shadow] { --cls: #6a6f9e; --cls-l: #c9cdf0; --cls-d: #1c1f3a; --cls-text: #ffffff; --cls-img: url(img/classes/monk-shadow.svg); }
+[data-sub=monk-four_elements] { --cls: #3bb0a0; --cls-l: #b2f0e6; --cls-d: #0f4a42; --cls-text: #111111; --cls-img: url(img/classes/monk-four_elements.svg); }
+[data-sub=paladin-devotion] { --cls: #e8c45a; --cls-l: #fff6cf; --cls-d: #6e5410; --cls-text: #111111; --cls-img: url(img/classes/paladin-devotion.svg); }
+[data-sub=paladin-ancients] { --cls: #6fb04a; --cls-l: #d2f0b8; --cls-d: #294a16; --cls-text: #111111; --cls-img: url(img/classes/paladin-ancients.svg); }
+[data-sub=paladin-vengeance] { --cls: #b22a3a; --cls-l: #ff9aa6; --cls-d: #4a0c14; --cls-text: #ffffff; --cls-img: url(img/classes/paladin-vengeance.svg); }
+[data-sub=ranger-hunter] { --cls: #8d9b3a; --cls-l: #dbe596; --cls-d: #3c4414; --cls-text: #111111; --cls-img: url(img/classes/ranger-hunter.svg); }
+[data-sub=ranger-beast_master] { --cls: #b8873a; --cls-l: #f2d29a; --cls-d: #4f3410; --cls-text: #111111; --cls-img: url(img/classes/ranger-beast_master.svg); }
+[data-sub=rogue-thief] { --cls: #c8a03c; --cls-l: #f6e2a4; --cls-d: #574010; --cls-text: #111111; --cls-img: url(img/classes/rogue-thief.svg); }
+[data-sub=rogue-assassin] { --cls: #9e2a3a; --cls-l: #ff9aa8; --cls-d: #3a0a12; --cls-text: #ffffff; --cls-img: url(img/classes/rogue-assassin.svg); }
+[data-sub=rogue-arcane_trickster] { --cls: #7e6ad8; --cls-l: #d4cbff; --cls-d: #2a1f60; --cls-text: #111111; --cls-img: url(img/classes/rogue-arcane_trickster.svg); }
+[data-sub=sorcerer-draconic] { --cls: #e0452e; --cls-l: #ffb09c; --cls-d: #5c140a; --cls-text: #111111; --cls-img: url(img/classes/sorcerer-draconic.svg); }
+[data-sub=sorcerer-wild] { --cls: #c84fd8; --cls-l: #f2c4fb; --cls-d: #4f1458; --cls-text: #111111; --cls-img: url(img/classes/sorcerer-wild.svg); }
+[data-sub=warlock-archfey] { --cls: #58c49a; --cls-l: #c6f5df; --cls-d: #14503a; --cls-text: #111111; --cls-img: url(img/classes/warlock-archfey.svg); }
+[data-sub=warlock-fiend] { --cls: #d63a2a; --cls-l: #ffb08a; --cls-d: #4a0e08; --cls-text: #ffffff; --cls-img: url(img/classes/warlock-fiend.svg); }
+[data-sub=warlock-great_old_one] { --cls: #3f9e86; --cls-l: #bff0e0; --cls-d: #0f3a30; --cls-text: #111111; --cls-img: url(img/classes/warlock-great_old_one.svg); }
+[data-sub=wizard-abjuration] { --cls: #6aa0d8; --cls-l: #d4e8ff; --cls-d: #1f3f66; --cls-text: #111111; --cls-img: url(img/classes/wizard-abjuration.svg); }
+[data-sub=wizard-conjuration] { --cls: #e0a030; --cls-l: #ffe0a0; --cls-d: #5e400a; --cls-text: #111111; --cls-img: url(img/classes/wizard-conjuration.svg); }
+[data-sub=wizard-divination] { --cls: #4fb8d8; --cls-l: #c8f0ff; --cls-d: #134a5c; --cls-text: #111111; --cls-img: url(img/classes/wizard-divination.svg); }
+[data-sub=wizard-enchantment] { --cls: #e06fae; --cls-l: #ffd0ea; --cls-d: #6b1d4a; --cls-text: #111111; --cls-img: url(img/classes/wizard-enchantment.svg); }
+[data-sub=wizard-evocation] { --cls: #e4572e; --cls-l: #ffbea8; --cls-d: #5e1a08; --cls-text: #111111; --cls-img: url(img/classes/wizard-evocation.svg); }
+[data-sub=wizard-illusion] { --cls: #9b7ae6; --cls-l: #e2d6ff; --cls-d: #36246e; --cls-text: #111111; --cls-img: url(img/classes/wizard-illusion.svg); }
+[data-sub=wizard-necromancy] { --cls: #7fb77e; --cls-l: #d8f2d6; --cls-d: #1e3a1e; --cls-text: #111111; --cls-img: url(img/classes/wizard-necromancy.svg); }
+[data-sub=wizard-transmutation] { --cls: #3fb48a; --cls-l: #c0f2df; --cls-d: #0f4a36; --cls-text: #111111; --cls-img: url(img/classes/wizard-transmutation.svg); }
 body[data-cls] {
   --accent: var(--cls); --accent-text: var(--cls-text);
   --cls-card: color-mix(in srgb, var(--cls) 7%, var(--card));

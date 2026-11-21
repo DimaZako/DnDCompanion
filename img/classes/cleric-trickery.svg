@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+<defs>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#b05cc8" stop-opacity=".55"/><stop offset=".6" stop-color="#b05cc8" stop-opacity=".18"/><stop offset="1" stop-color="#b05cc8" stop-opacity="0"/></radialGradient>
+<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ecc2f8"/><stop offset="1" stop-color="#b05cc8"/></linearGradient>
+<linearGradient id="st" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dfe6"/></linearGradient>
+<linearGradient id="wd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d6a06a"/><stop offset="1" stop-color="#9a6431"/></linearGradient>
+
+</defs>
+<circle cx="100" cy="100" r="99" fill="url(#glow)"/>
+<circle cx="100" cy="100" r="86" fill="none" stroke="#b05cc8" stroke-opacity=".5" stroke-width="2.5"/>
+<circle cx="100" cy="100" r="78" fill="none" stroke="#ecc2f8" stroke-opacity=".35" stroke-width="1.2" stroke-dasharray="1.5 6"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<g transform="translate(120 104) rotate(16) scale(0.72) translate(-100 -100)"><path d="M60,58 C80,50 120,50 140,58 C146,96 132,130 100,142 C68,130 54,96 60,58 Z" fill="#3a2440" stroke="#4a1a5a" stroke-width="4"/><path d="M80,84 C86,78 94,80 96,88 C90,90 84,90 80,84 Z M120,84 C114,78 106,80 104,88 C110,90 116,90 120,84 Z" fill="#fff"/><path d="M80,120 C92,110 108,110 120,120" fill="none" stroke="#fff" stroke-width="4"/></g><g transform="translate(82 98) rotate(-12) scale(0.78) translate(-100 -100)"><path d="M60,58 C80,50 120,50 140,58 C146,96 132,130 100,142 C68,130 54,96 60,58 Z" fill="url(#m)" stroke="#4a1a5a" stroke-width="4"/><path d="M80,84 C86,78 94,80 96,88 C90,90 84,90 80,84 Z M120,84 C114,78 106,80 104,88 C110,90 116,90 120,84 Z" fill="#4a1a5a"/><path d="M80,110 C92,122 108,122 120,110" fill="none" stroke="#4a1a5a" stroke-width="4"/></g><g fill="#ecc2f8"><path d="M150.0,40.0 L151.8,46.2 L158.0,48.0 L151.8,49.8 L150.0,56.0 L148.2,49.8 L142.0,48.0 L148.2,46.2 Z"/><path d="M46.0,144.0 L47.4,148.6 L52.0,150.0 L47.4,151.4 L46.0,156.0 L44.6,151.4 L40.0,150.0 L44.6,148.6 Z"/></g>
+</g>
+</svg>
