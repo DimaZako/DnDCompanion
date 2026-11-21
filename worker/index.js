@@ -61,6 +61,8 @@ function ensureSchema(db) {
     schemaReady = db.batch(SCHEMA.map((s) => db.prepare(s)))
       // версія кімнати для миттєвого оновлення (колонка могла вже існувати)
       .then(() => db.prepare('ALTER TABLE rooms ADD COLUMN version INTEGER NOT NULL DEFAULT 0').run().catch(() => {}))
+      // максимальний початковий рівень персонажів (1 — лише з першого)
+      .then(() => db.prepare('ALTER TABLE rooms ADD COLUMN max_start_level INTEGER NOT NULL DEFAULT 1').run().catch(() => {}))
       .catch((e) => { schemaReady = null; throw e; });
   }
   return schemaReady;
@@ -605,17 +607,18 @@ const OPS = {
     return { ok: true };
   },
 
-  async createRoom(c, { name }) {
+  async createRoom(c, { name, maxStartLevel }) {
     name = str(name, 60);
+    const maxLv = int(maxStartLevel, 1, 20, 1);
     if (!name) fail('Вкажіть назву кімнати');
     let id;
     for (let i = 0; i < 10; i++) {
       id = roomCode();
       if (!(await first(c.db, 'SELECT 1 AS x FROM rooms WHERE id = ?', id))) break;
     }
-    await run(c.db, 'INSERT INTO rooms (id, name, master_id, session, created_at, deleted) VALUES (?, ?, ?, 1, ?, 0)', id, name, c.user.id, now());
+    await run(c.db, 'INSERT INTO rooms (id, name, master_id, session, created_at, deleted, max_start_level) VALUES (?, ?, ?, 1, ?, 0, ?)', id, name, c.user.id, now(), maxLv);
     const room = await getRoom(c, id);
-    await addLog(c, room, `створив кімнату «${name}»`);
+    await addLog(c, room, `створив кімнату «${name}»${maxLv > 1 ? ` (початковий рівень персонажів до ${maxLv})` : ''}`);
     return { room: { id, name } };
   },
 
@@ -625,6 +628,15 @@ const OPS = {
     if (!name) fail('Вкажіть назву кімнати');
     await run(c.db, 'UPDATE rooms SET name = ? WHERE id = ?', name, room.id);
     await addLog(c, room, `перейменував кімнату: «${room.name}» → «${name}»`);
+  },
+
+  async setRoomOptions(c, { roomId, maxStartLevel }) {
+    const room = await requireMaster(c, roomId);
+    const maxLv = int(maxStartLevel, 1, 20, 1);
+    if (maxLv === (room.max_start_level || 1)) return { maxStartLevel: maxLv };
+    await run(c.db, 'UPDATE rooms SET max_start_level = ? WHERE id = ?', maxLv, room.id);
+    await addLog(c, room, maxLv > 1 ? `дозволив створювати персонажів до ${maxLv} рівня` : 'персонажі тепер починають з 1 рівня');
+    return { maxStartLevel: maxLv };
   },
 
   async deleteRoom(c, { roomId, message }) {
@@ -672,7 +684,7 @@ const OPS = {
   async room(c, { roomId }) {
     const room = await getRoom(c, roomId);
     const master = await first(c.db, 'SELECT first_name FROM users WHERE id = ?', room.master_id);
-    const base = { id: room.id, name: room.name, session: room.session, version: room.version || 0, masterName: master ? master.first_name : '' };
+    const base = { id: room.id, name: room.name, session: room.session, version: room.version || 0, maxStartLevel: room.max_start_level || 1, masterName: master ? master.first_name : '' };
     if (room.master_id === c.user.id) {
       const members = await all(c.db, `SELECT m.user_id, m.joined_at, u.first_name, u.username FROM members m
         LEFT JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`, room.id);
@@ -755,13 +767,16 @@ const OPS = {
     if (await first(c.db, 'SELECT 1 AS x FROM characters WHERE room_id = ? AND user_id = ? AND alive = 1', room.id, c.user.id)) fail('У тебе вже є живий персонаж');
     const err = R.validateBase(method, input && input.base, mem.last_roll ? JSON.parse(mem.last_roll) : null);
     if (err) fail(err);
-    const { errors, sheet } = R.buildCharacter(input || {});
+    const level = int(input && input.level, 1, 20, 1);
+    const maxLv = room.max_start_level || 1;
+    if (level > maxLv) fail(maxLv > 1 ? `У цій кімнаті можна почати максимум з ${maxLv} рівня` : 'У цій кімнаті персонажі починають з 1 рівня');
+    const { errors, sheet } = R.buildCharacter({ ...(input || {}), level });
     if (errors.length) fail(errors.join('\n'));
     const t = now();
     const r = await run(c.db, 'INSERT INTO characters (room_id, user_id, alive, sheet, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)', room.id, c.user.id, JSON.stringify(sheet), t, t);
     const methodName = { standard: 'стандартний набір', pointbuy: 'купівля очками', roll: 'кидок кубиків' }[method];
-    await addLog(c, room, `створив персонажа ${sheet.name}: ${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name} 1 рів. (${methodName}; ${R.ABILITIES.map((a) => `${R.ABILITY_SHORT[a]} ${sheet.abilities[a]}`).join(', ')})`);
-    notify(c, room.master_id, `🧝 ${c.user.name} створив персонажа «${sheet.name}» (${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}) у кімнаті «${room.name}».`);
+    await addLog(c, room, `створив персонажа ${sheet.name}: ${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}${sheet.subclass ? ` (${sheet.subclass})` : ''} ${level} рів. (${methodName}; ${R.ABILITIES.map((a) => `${R.ABILITY_SHORT[a]} ${sheet.abilities[a]}`).join(', ')})`);
+    notify(c, room.master_id, `🧝 ${c.user.name} створив персонажа «${sheet.name}» (${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}, ${level} рів.) у кімнаті «${room.name}».`);
     return { charId: r.meta && r.meta.last_row_id };
   },
 

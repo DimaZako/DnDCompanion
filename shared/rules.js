@@ -316,7 +316,7 @@ export function newSheetTemplate() {
 
 // Побудова листа 1 рівня з даних майстра створення (валідація виконується на сервері)
 // input: {name, raceId, classId, backgroundId, alignment, base:{..6}, raceChoice:[ab,ab], skills:[...], raceSkills:[...], bgSkills:[...], expertise:[...], text:{}}
-export function buildCharacter(input) {
+export function buildCharacter(input, opts = {}) {
   const errors = [];
   const race = RACES[input.raceId];
   const cls = CLASSES[input.classId];
@@ -378,13 +378,59 @@ export function buildCharacter(input) {
   for (const [n, d] of RACE_TRAITS[input.raceId] || []) s.features.push({ lvl: 1, name: n, desc: d, src: 'race' });
   errors.push(...gainLevelFeatures(s, 1, { subclassId: input.subclassId, choices: input.choices }));
 
-  // Хіти
-  const hp = cls.hd + mod(abil.con) + hpPerLevelBonus(s);
-  s.hp = { max: Math.max(1, hp), cur: Math.max(1, hp), temp: 0 };
+  // Початковий рівень вище 1: проходимо розвиток 2…N за правилами
+  const N = Math.max(1, Math.min(20, Math.floor(Number(input.level) || 1)));
+  if (N > 1 && !errors.length) errors.push(...developTo(s, N, input, opts.snaps));
+
+  // Хіти: 1 рівень — максимум кості, далі — середнє (з підсумковою СТА)
+  const per = mod(s.abilities.con) + hpPerLevelBonus(s);
+  const hp = Math.max(1, cls.hd + per) + (N - 1) * Math.max(1, hdAverage(cls.hd) + per);
+  s.hp = { max: hp, cur: hp, temp: 0 };
+  s.level = N; s.targetLevel = N; s.xp = XP_TABLE[N - 1];
+  s.features.sort((a, b) => a.lvl - b.lvl);
   s.spell.ability = null;
   s.text = {};
   for (const k of TEXT_FIELD_IDS) if (input.text && input.text[k]) s.text[k] = String(input.text[k]).slice(0, 4000);
   return { errors, sheet: s };
+}
+
+// Розвиток персонажа від 2 до N рівня при створенні.
+// input.asi[L] = {mode:'asi', asi:{str:1,...}} | {mode:'feat', feat:{id, ability, skills}}
+// input.expertiseAt[L] = [skill], input.choicesUp = {specId:[...]} — накопичені вибори класу/підкласу до N.
+// snaps (необов'язково) — сюди кладуться копії листа перед кроками ПХ/експертизи кожного рівня (для інтерфейсу).
+function developTo(s, N, input, snaps) {
+  const errors = [];
+  for (let L = 2; L <= N; L++) errors.push(...gainLevelFeatures(s, L, { subclassId: input.subclassId, skipChoices: true }));
+  s.level = N;
+  errors.push(...applyChoicesAt(s, N, input.choicesUp || {}, true));
+  const asiIn = input.asi || {};
+  const expIn = input.expertiseAt || {};
+  for (let L = 2; L <= N; L++) {
+    s.level = L;
+    if (snaps && (isAsiLevel(s.classId, L) || expertiseAt(s.classId, L))) snaps[L] = JSON.parse(JSON.stringify(s));
+    if (isAsiLevel(s.classId, L)) {
+      const a = asiIn[L] || {};
+      if (a.mode === 'feat') {
+        errors.push(...applyFeat(s, a.feat || {}, L, 0).map((e) => `Рівень ${L}: ${e}`));
+      } else {
+        let sum = 0;
+        const inc = {};
+        for (const k of ABILITIES) { const v = Math.floor(Number(a.asi && a.asi[k]) || 0); if (v > 0) { inc[k] = Math.min(2, v); sum += inc[k]; } }
+        if (sum !== 2) errors.push(`Рівень ${L}: розподіли 2 очки характеристик або обери рису`);
+        else if (Object.keys(inc).some((k) => s.abilities[k] + inc[k] > 20)) errors.push(`Рівень ${L}: характеристика не може перевищувати 20`);
+        else for (const k of Object.keys(inc)) s.abilities[k] += inc[k];
+      }
+    }
+    const expN = expertiseAt(s.classId, L);
+    if (expN) {
+      const e = [...new Set(Array.isArray(expIn[L]) ? expIn[L] : [])].filter((k) => s.skills[k] === 1);
+      if (e.length !== expN) errors.push(`Рівень ${L}: обери ${expN} навички для експертизи`);
+      for (const k of e) s.skills[k] = 2;
+    }
+    levelEffects(s, L);
+  }
+  s.level = N;
+  return [...new Set(errors)];
 }
 
 export function validateBase(method, base, roll) {
@@ -466,23 +512,36 @@ export function gainLevelFeatures(sheet, newLevel, input = {}) {
   }
   pushF(sheet, classFeaturesAt(sheet.classId, newLevel), newLevel, 'class');
   if (sheet.subclassId) pushF(sheet, subclassFeaturesAt(sheet.classId, sheet.subclassId, newLevel), newLevel, 'subclass');
-  if (errors.length) return errors;
-  const picks = input.choices || {};
-  for (const spec of pendingChoices(sheet, newLevel)) {
+  if (errors.length || input.skipChoices) return errors;
+  return applyChoicesAt(sheet, newLevel, input.choices || {});
+}
+
+// Перший рівень, на якому з'являється n-й (з нуля) вибір специфікації
+function pickLevel(spec, n) {
+  const lv = Object.keys(spec.total).map(Number).sort((a, b) => a - b);
+  for (const l of lv) if (spec.total[l] > n) return l;
+  return lv[lv.length - 1] || 1;
+}
+// Застосувати всі невиконані вибори на рівні level. earliest — позначати вибір рівнем, де він з'явився.
+export function applyChoicesAt(sheet, level, picks = {}, earliest = false) {
+  const errors = [];
+  sheet.choices = sheet.choices || {};
+  for (const spec of pendingChoices(sheet, level)) {
     const raw = Array.isArray(picks[spec.id]) ? picks[spec.id] : picks[spec.id] ? [picks[spec.id]] : [];
     const sel = [...new Set(raw.map(String))];
     if (sel.length !== spec.need) { errors.push(`${spec.name}: обери ${spec.need}`); continue; }
-    const opts = choiceOptions(spec, sheet, newLevel);
+    const opts = choiceOptions(spec, sheet, level);
     const bad = sel.find((id) => { const op = opts.find((x) => x.id === id); return !op || op.disabled; });
     if (bad) { errors.push(`${spec.name}: недоступний варіант`); continue; }
+    const before = (sheet.choices[spec.id] || []).length;
     sheet.choices[spec.id] = [...(sheet.choices[spec.id] || []), ...sel];
-    for (const id of sel) {
+    sel.forEach((id, i) => {
       const op = opts.find((x) => x.id === id);
       if (spec.kind === 'skill') sheet.skills[id] = Math.max(1, sheet.skills[id] || 0);
       if (spec.kind === 'expert') sheet.skills[id] = 2;
       for (const k of op.skills || []) sheet.skills[k] = Math.max(1, sheet.skills[k] || 0);
-      sheet.features.push({ lvl: newLevel, name: `${spec.name}: ${op.name}`, desc: op.desc || '', src: spec.src || 'choice' });
-    }
+      sheet.features.push({ lvl: earliest ? pickLevel(spec, before + i) : level, name: `${spec.name}: ${op.name}`, desc: op.desc || '', src: spec.src || 'choice' });
+    });
   }
   return errors;
 }

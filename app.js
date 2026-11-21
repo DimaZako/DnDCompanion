@@ -14,7 +14,7 @@ const $busy = document.getElementById('busy');
 
 const S = {
   me: null, nav: [], room: null, modal: null, tab: 'sheet',
-  wiz: null, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, log: null, logAll: false, bootError: null,
+  wiz: null, newRoom: { name: '', pick: false, max: 5 }, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, log: null, logAll: false, bootError: null,
 };
 
 // ================= Допоміжні =================
@@ -319,8 +319,9 @@ const VIEWS = {
     return `<div class="top"><h2>🧙 Майстер</h2><button class="link" data-act="switchRole">Змінити роль</button></div>
     <div class="card"><h3>Створити кімнату</h3>
       <p class="hint">Кімната — це твоя гра або кампанія. До ${S.me.maxPlayers} гравців.</p>
-      <div class="row mt"><input id="newRoomName" class="grow" maxlength="60" placeholder="Назва, напр. «Копальні Фанделвера»">
-      <button class="btn primary" data-act="createRoom">Створити</button></div></div>
+      <div class="row mt"><input id="newRoomName" class="grow" data-bind="newRoom.name" value="${esc(S.newRoom.name)}" maxlength="60" placeholder="Назва, напр. «Копальні Фанделвера»">
+      <button class="btn primary" data-act="createRoom">Створити</button></div>
+      ${startLevelHtml('newRoom.pick', S.newRoom.pick, 'newRoom.max', S.newRoom.max, '')}</div>
     <div class="card tap list-item" data-act="openMyCatalog"><div class="ava">📦</div><div class="meta"><b>Каталог предметів</b>
       <small>Предмети D&D 5e і твої власні — спільні для всіх твоїх кімнат</small></div><span class="chev">›</span></div>
     <h3 class="sec">Мої кімнати</h3>
@@ -608,6 +609,17 @@ function itemRow(it) {
   <div class="meta"><div class="nm">${esc(d.name)}</div><small>${esc(itemSub(d, it))}</small></div><span class="q">×${it.qty}</span></div>`;
 }
 
+// Налаштування початкового рівня (створення кімнати й налаштування)
+function startLevelHtml(pickPath, on, maxPath, max, rerender) {
+  const lv = Array.from({ length: 19 }, (_, i) => i + 2);
+  return `<label class="row mt" style="gap:10px;cursor:pointer"><input type="checkbox" data-bind="${pickPath}" data-rerender="${rerender}" ${on ? 'checked' : ''}>
+    <span>Гравці можуть обрати рівень персонажа</span></label>
+    ${on ? `<label class="fld"><span>Максимальний початковий рівень</span><select data-bind="${maxPath}" data-num data-rerender="${rerender}">
+      ${lv.map((l) => `<option value="${l}" ${l === Number(max) ? 'selected' : ''}>${l} рівень</option>`).join('')}</select></label>
+      <small class="hint">Гравець обере рівень від 1 до ${Number(max)} і пройде всі вибори розвитку за правилами D&D 5e.</small>`
+    : '<small class="hint">Вимкнено — усі персонажі починають з 1 рівня.</small>'}`;
+}
+
 // ---------- Вибори класу (спільне для створення й підвищення) ----------
 function getPath(path) { return path.split('.').reduce((o, k) => (o == null ? o : o[k]), S); }
 function rerenderFor(path) { if (path.startsWith('modal')) renderModal(); else render(); }
@@ -626,7 +638,7 @@ function subclassPickerHtml(classId, selected, path) {
 // specs — R.pendingChoices(...); optSheet — лист для перевірки доступності варіантів
 function choicesHtml(specs, optSheet, level, path, picks) {
   return specs.map((spec) => {
-    const opts = R.choiceOptions(spec, optSheet, level);
+    const opts = R.choiceOptions(spec, typeof optSheet === 'function' ? optSheet(spec) : optSheet, level);
     const sel = picks[spec.id] || [];
     return `<div class="card"><h3>${esc(spec.name)}</h3><p class="hint">Обери ${spec.need} (${sel.length}/${spec.need})</p>
     ${opts.map((op) => {
@@ -654,11 +666,19 @@ function featureListHtml(list, opts = {}) {
 // ---------- Створення персонажа ----------
 function newWizard() {
   return {
-    step: 1, name: '', raceId: '', classId: '', backgroundId: '', alignment: '',
+    step: 1, name: '', raceId: '', classId: '', backgroundId: '', alignment: '', level: 1,
     method: 'standard', assign: {}, pb: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
     rolls: (S.room && S.room.lastRoll) || null, raceChoice: [], skills: [], raceSkills: [], bgSkills: [], expertise: [], text: {}, subclassId: '', choices: {},
+    asi: {}, expertiseAt: {}, choicesUp: {},
   };
 }
+const roomMaxLevel = () => Math.max(1, Number(S.room && S.room.room && S.room.room.maxStartLevel) || 1);
+const wizLevel = () => Math.min(roomMaxLevel(), Math.max(1, Number(S.wiz.level) || 1));
+// Кроки майстра: «Розвиток» з'являється, якщо персонаж починає вище 1 рівня
+function wizSteps() {
+  return ['basics', 'abilities', 'skills', ...(wizLevel() > 1 ? ['levels'] : []), 'desc'];
+}
+const wizStepName = () => wizSteps()[S.wiz.step - 1] || 'basics';
 function wizPool() { const w = S.wiz; return w.method === 'standard' ? R.STANDARD_ARRAY : (w.rolls || []); }
 function wizBase() {
   const w = S.wiz;
@@ -675,12 +695,13 @@ function wizBase() {
   return base;
 }
 const pbSpent = () => R.ABILITIES.reduce((t, a) => t + R.POINT_BUY_COST[S.wiz.pb[a]], 0);
-function wizInput() {
+function wizInput(over = {}) {
   const w = S.wiz;
   return {
     name: w.name, raceId: w.raceId, classId: w.classId, backgroundId: w.backgroundId, alignment: w.alignment,
     base: wizBase() || {}, raceChoice: w.raceChoice, skills: w.skills, raceSkills: w.raceSkills, bgSkills: w.bgSkills, expertise: w.expertise, text: w.text,
     subclassId: w.subclassId, choices: w.choices,
+    level: wizLevel(), asi: w.asi, expertiseAt: w.expertiseAt, choicesUp: w.choicesUp, ...over,
   };
 }
 function wizFixedSkills() {
@@ -689,39 +710,78 @@ function wizFixedSkills() {
   const bg = R.BACKGROUNDS[w.backgroundId] || { skills: [] };
   return new Set([...(bg.choose ? w.bgSkills : bg.skills), ...(race.skills || [])]);
 }
-function wizStepError() {
+function wizStepError(name = wizStepName()) {
   const w = S.wiz;
-  if (w.step === 1) {
+  if (name === 'basics') {
     if (!w.name.trim()) return 'Вкажи ім’я';
     if (!w.raceId || !w.classId || !w.backgroundId) return 'Обери расу, клас і передісторію';
   }
-  if (w.step === 2) {
+  if (name === 'abilities') {
     if (!wizBase()) return w.method === 'roll' && !w.rolls ? 'Кинь кубики' : 'Розподіли всі значення';
     if (w.method === 'pointbuy' && pbSpent() > R.POINT_BUY_TOTAL) return 'Перевищено бюджет очок';
     const race = R.RACES[w.raceId];
     if (race.choose && w.raceChoice.length !== race.choose.count) return `Обери ${race.choose.count} характеристики для бонусу раси`;
   }
-  if (w.step >= 3) {
+  if (name === 'skills') {
+    const { errors } = R.buildCharacter(wizInput({ level: 1 }));
+    if (errors.length) return errors[0];
+  }
+  if (name === 'levels' || name === 'desc') {
     const { errors } = R.buildCharacter(wizInput());
     if (errors.length) return errors[0];
+  }
+  return null;
+}
+// Помилка будь-якого кроку до поточного включно (на випадок змін на попередніх кроках)
+function wizFirstError(upto = S.wiz.step) {
+  const steps = wizSteps();
+  for (let i = 0; i < upto && i < steps.length; i++) {
+    const e = wizStepError(steps[i]);
+    if (e) return { step: i + 1, err: e };
   }
   return null;
 }
 function createHtml() {
   const w = S.wiz;
   if (!w) return loadingHtml();
-  const err = wizStepError();
-  let h = `<div class="top"><h2>Новий персонаж</h2><small class="hint">Крок ${w.step}/4</small></div>
-  <div class="steps">${[1, 2, 3, 4].map((i) => `<i class="${i <= w.step ? 'on' : ''}"></i>`).join('')}</div>`;
-  if (w.step === 1) h += wizStep1();
-  if (w.step === 2) h += wizStep2();
-  if (w.step === 3) h += wizStep3();
-  if (w.step === 4) h += wizStep4();
-  h += `${err ? `<p class="hint center mt">⚠️ ${esc(err)}</p>` : ''}<div class="btns mt2">
+  const steps = wizSteps();
+  if (w.step > steps.length) w.step = steps.length;
+  const name = wizStepName();
+  const err = wizStepError(name);
+  const titles = { basics: 'Основне', abilities: 'Характеристики', skills: 'Навички', levels: `Розвиток до ${wizLevel()} рівня`, desc: 'Підсумок' };
+  let h = `<div class="top"><h2>Новий персонаж</h2><small class="hint">Крок ${w.step}/${steps.length} · ${titles[name]}</small></div>
+  <div class="steps">${steps.map((_, i) => `<i class="${i < w.step ? 'on' : ''}"></i>`).join('')}</div>`;
+  if (name === 'basics') h += wizStep1();
+  if (name === 'abilities') h += wizStep2();
+  if (name === 'skills') h += wizStep3();
+  if (name === 'levels') h += wizStepLevels();
+  if (name === 'desc') h += wizStep4();
+  const last = w.step >= steps.length;
+  h += `<p class="hint center mt" id="wizErr" ${err ? '' : 'hidden'}>⚠️ ${esc(err || '')}</p><div class="btns mt2">
     ${w.step > 1 ? '<button class="btn" data-act="wizStep" data-d="-1">← Назад</button>' : ''}
-    ${w.step < 4 ? `<button class="btn primary ${err ? 'disabled' : ''}" data-act="wizStep" data-d="1">Далі →</button>`
-    : `<button class="btn primary ${err ? 'disabled' : ''}" data-act="createChar">✅ Створити персонажа</button>`}</div>`;
+    ${!last ? `<button class="btn primary ${err ? 'dim' : ''}" id="wizNext" data-act="wizStep" data-d="1">Далі →</button>`
+    : `<button class="btn primary ${err ? 'dim' : ''}" id="wizNext" data-act="createChar">✅ Створити персонажа</button>`}</div>`;
   return h;
+}
+// Живе оновлення підказки й кнопки без перемальовування (під час введення тексту)
+function updateWizNav() {
+  if (!S.wiz || cur().view !== 'create') return;
+  const err = wizStepError();
+  const box = document.getElementById('wizErr');
+  const btn = document.getElementById('wizNext');
+  if (box) { box.hidden = !err; box.textContent = err ? `⚠️ ${err}` : ''; }
+  if (btn) btn.classList.toggle('dim', !!err);
+}
+// Скидаємо вибори, що залежать від змінених полів, щоб не лишалось «невидимих» старих виборів
+function wizChanged(path) {
+  const w = S.wiz;
+  if (!w) return;
+  if (path === 'wiz.classId') Object.assign(w, { skills: [], expertise: [], subclassId: '', choices: {}, asi: {}, expertiseAt: {}, choicesUp: {} });
+  if (path === 'wiz.raceId') Object.assign(w, { raceChoice: [], raceSkills: [], choices: {}, choicesUp: {} });
+  if (path === 'wiz.backgroundId') w.bgSkills = [];
+  if (path === 'wiz.level') { w.choicesUp = {}; w.expertiseAt = {}; }
+  const fm2 = path.match(/^wiz\.asi\.(\d+)\.feat\.id$/);
+  if (fm2) Object.assign(w.asi[fm2[1]].feat, { ability: '', skills: [] });
 }
 function opts(map, val, placeholder) {
   return `<option value="">${placeholder}</option>${Object.entries(map).map(([k, v]) => `<option value="${k}" ${k === val ? 'selected' : ''}>${esc(v.name || v)}</option>`).join('')}`;
@@ -740,6 +800,9 @@ function wizStep1() {
     <label class="fld"><span>Передісторія</span><select data-bind="wiz.backgroundId" data-rerender>${opts(R.BACKGROUNDS, w.backgroundId, 'Обери передісторію')}</select></label>
     ${bg ? `<small class="hint">${bg.choose ? 'Обереш 2 навички самостійно' : `Навички: ${bg.skills.map((k) => R.SKILLS[k][0]).join(', ')}`}</small>` : ''}
     <label class="fld"><span>Світогляд</span><select data-bind="wiz.alignment"><option value="">—</option>${R.ALIGNMENTS.map((a) => `<option ${a === w.alignment ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
+    ${roomMaxLevel() > 1 ? `<label class="fld"><span>Початковий рівень</span><select data-bind="wiz.level" data-num data-rerender>
+      ${Array.from({ length: roomMaxLevel() }, (_, i) => i + 1).map((l) => `<option value="${l}" ${l === wizLevel() ? 'selected' : ''}>${l} рівень${l > 1 ? ` (${R.XP_TABLE[l - 1]} досвіду)` : ''}</option>`).join('')}</select></label>
+      <small class="hint">Майстер дозволив почати до ${roomMaxLevel()} рівня. Вибори розвитку зробиш на окремому кроці.</small>` : ''}
   </div>`;
 }
 function wizStep2() {
@@ -831,10 +894,93 @@ function wizStep3() {
   }
   const cd = R.CLASS_DATA[w.classId];
   if (cd && cd.subclassLevel === 1) h += subclassPickerHtml(w.classId, w.subclassId, 'wiz.subclassId');
-  const pre = R.buildCharacter({ ...wizInput(), choices: {} }).sheet;
+  const pre = R.buildCharacter(wizInput({ choices: {}, level: 1 })).sheet;
   if (pre && !R.subclassNeeded(pre, 1)) {
     const specs = R.pendingChoices(pre, 1);
     if (specs.length) h += `<h3 class="sec">Вибори 1 рівня</h3>${choicesHtml(specs, pre, 1, 'wiz.choices', w.choices)}`;
+  }
+  return h;
+}
+// Крок «Розвиток»: підклас, ПХ/риси, експертиза та вибори класу до обраного рівня
+function wizStepLevels() {
+  const w = S.wiz;
+  const N = wizLevel();
+  const cls = R.CLASSES[w.classId];
+  const cd = R.CLASS_DATA[w.classId];
+  const snaps = {};
+  const full = R.buildCharacter(wizInput(), { snaps });
+  const sheet = full.sheet;
+  let h = `<div class="card"><p class="hint">${abbrify(`Персонаж починає з ${N} рівня (${R.XP_TABLE[N - 1]} досвіду). Хіти: максимум кості на 1 рівні, далі середнє к${cls.hd}.`)}</p>
+    ${sheet && sheet.hp ? `<div class="stats"><div class="stat"><small>Хіти</small><b>${sheet.hp.max}</b></div><div class="stat"><small>${ab('Майст.')}</small><b>${fm(R.profBonus(N))}</b></div>
+    ${R.isCaster(sheet) ? `<div class="stat"><small>Комірки</small><b>${R.sheetSlots(sheet).filter(Boolean).join('/') || '—'}</b></div>` : ''}</div>` : ''}</div>`;
+  // Підклас (якщо він з'являється після 1 рівня)
+  if (cd && cd.subclassLevel > 1 && cd.subclassLevel <= N) {
+    h += `<h3 class="sec">${cd.subclassLevel} рівень</h3>${subclassPickerHtml(w.classId, w.subclassId, 'wiz.subclassId')}`;
+  }
+  // Підвищення характеристик / риси та експертиза по рівнях
+  for (let L = 2; L <= N; L++) {
+    const snap = snaps[L];
+    if (!snap) continue;
+    if (R.isAsiLevel(w.classId, L)) {
+      const a = (w.asi[L] = w.asi[L] || { mode: 'asi', asi: {}, feat: { id: '', ability: '', skills: [] } });
+      h += `<div class="card"><h3>${L} рівень: підвищення характеристик або риса</h3><div class="chips">
+        <button class="chip ${a.mode === 'asi' ? 'on' : ''}" data-act="wizAsiMode" data-l="${L}" data-m="asi">+2 до характеристик</button>
+        <button class="chip ${a.mode === 'feat' ? 'on' : ''}" data-act="wizAsiMode" data-l="${L}" data-m="feat">Риса</button></div>`;
+      if (a.mode === 'asi') {
+        const sum = Object.values(a.asi).reduce((t, v) => t + v, 0);
+        h += `<p class="hint">Розподіли 2 очки: +2 до однієї або +1 до двох. Максимум 20. Використано: ${sum}/2</p>
+        ${R.ABILITIES.map((k) => { const v = a.asi[k] || 0; const base = snap.abilities[k]; return `<div class="ln"><span class="grow">${R.ABILITY_NAMES[k]} <span class="hint">${base}${v ? ` → ${base + v}` : ''}</span></span>
+          <div class="stepper"><button data-act="wizAsi" data-l="${L}" data-a="${k}" data-d="-1">−</button><input value="${v ? '+' + v : '0'}" readonly style="width:50px"><button data-act="wizAsi" data-l="${L}" data-a="${k}" data-d="1">+</button></div></div>`; }).join('')}`;
+      } else {
+        const fo = R.featOptions(snap);
+        const feat = R.FEATS.find((x) => x.id === a.feat.id);
+        h += `<label class="fld"><span>Риса</span><select data-bind="wiz.asi.${L}.feat.id" data-rerender><option value="">Обери рису…</option>
+          ${fo.map((x) => `<option value="${x.id}" ${a.feat.id === x.id ? 'selected' : ''} ${x.disabled && a.feat.id !== x.id ? 'disabled' : ''}>${esc(x.name)}${x.reason ? ` (${esc(x.reason)})` : ''}</option>`).join('')}</select></label>`;
+        if (feat) {
+          h += `<p class="textblock">${abbrify(feat.desc)}</p>`;
+          if (feat.asi && feat.asi.length > 1) {
+            h += `<p class="hint">Яку характеристику підвищити на +1?</p><div class="chips">${feat.asi.map((k) => `<button class="chip ${a.feat.ability === k ? 'on' : ''} ${snap.abilities[k] >= 20 ? 'muted' : ''}" data-act="wizFeatAbility" data-l="${L}" data-a="${k}">${R.ABILITY_NAMES[k]} (${snap.abilities[k]})</button>`).join('')}</div>`;
+          }
+          if (feat.effect === 'skilled') {
+            const sel = a.feat.skills || [];
+            h += `<p class="hint">Обери 3 навички (${sel.length}/3)</p>${R.SKILL_IDS.map((k) => {
+              const on = sel.includes(k); const dis = (!!snap.skills[k] && !on) || (!on && sel.length >= 3);
+              return `<div class="pick ${dis ? 'disabled' : ''}" data-act="pickChoice" data-path="wiz.asi.${L}.feat" data-spec="skills" data-k="${k}" data-max="3"><input type="checkbox" ${on ? 'checked' : ''} tabindex="-1" style="pointer-events:none"><span>${R.SKILLS[k][0]}</span>${snap.skills[k] && !on ? '<span class="v hint">вже є</span>' : ''}</div>`;
+            }).join('')}`;
+          }
+        }
+      }
+      h += '</div>';
+    }
+    const expN = R.expertiseAt(w.classId, L);
+    if (expN) {
+      const sel = (w.expertiseAt[L] = (w.expertiseAt[L] || []).filter((k) => snap.skills[k] === 1));
+      const other = new Set(Object.entries(w.expertiseAt).filter(([l]) => Number(l) !== L).flatMap(([, v]) => v));
+      const prof = R.SKILL_IDS.filter((k) => snap.skills[k] === 1);
+      h += `<div class="card"><h3>${L} рівень: експертиза</h3><p class="hint">Подвоєний бонус майстерності для ${expN} навичок (${sel.length}/${expN})</p>${prof.map((k) => {
+        const on = sel.includes(k);
+        const dis = !on && (other.has(k) || sel.length >= expN);
+        return `<div class="pick ${dis ? 'disabled' : ''}" data-act="pickChoice" data-path="wiz.expertiseAt" data-spec="${L}" data-k="${k}" data-max="${expN}"><input type="checkbox" ${on ? 'checked' : ''} tabindex="-1" style="pointer-events:none"><span>${R.SKILLS[k][0]}</span>${other.has(k) && !on ? '<span class="v hint">на іншому рівні</span>' : ''}</div>`;
+      }).join('')}</div>`;
+    }
+  }
+  // Накопичені вибори класу й підкласу (бойові стилі, виклики, метамагія тощо)
+  const pre = R.buildCharacter(wizInput({ choicesUp: {} })).sheet;
+  if (pre && !R.subclassNeeded(pre, N)) {
+    const specs = R.pendingChoices(pre, N);
+    if (specs.length) {
+      // для перевірки доступності враховуємо вибори інших пунктів (напр. дар договору для викликів)
+      const optSheet = (spec) => {
+        const ch = { ...(pre.choices || {}) };
+        for (const [id, v] of Object.entries(w.choicesUp)) if (id !== spec.id) ch[id] = [...(ch[id] || []), ...v];
+        return { ...pre, choices: ch };
+      };
+      h += `<h3 class="sec">Вибори до ${N} рівня</h3>${choicesHtml(specs, optSheet, N, 'wiz.choicesUp', w.choicesUp)}`;
+    }
+  }
+  if (sheet) {
+    const gained = (sheet.features || []).map((x, i) => ({ ...x, _i: i })).filter((x) => x.lvl > 1);
+    if (gained.length) h += `<div class="lines"><h3>Вміння 2–${N} рівнів</h3>${featureListHtml(gained, { showLvl: true })}</div>`;
   }
   return h;
 }
@@ -844,13 +990,13 @@ function wizStep4() {
   let h = '';
   if (sheet) {
     const dv = { ac: R.computeAC(sheet, []), prof: R.sheetProf(sheet) };
-    h += `<div class="char-head"><div class="nm">${CLASS_ICON[sheet.classId]} ${esc(sheet.name)}</div><div class="sub">${esc(raceName(sheet))} · ${esc(className(sheet))} · 1 рівень</div></div>
+    h += `<div class="char-head"><div class="nm">${CLASS_ICON[sheet.classId]} ${esc(sheet.name)}</div><div class="sub">${esc(raceName(sheet))} · ${esc(className(sheet))}${sheet.subclass ? ` (${esc(sheet.subclass)})` : ''} · ${sheet.level} рівень</div></div>
     <div class="stats"><div class="stat"><small>Хіти</small><b>${sheet.hp.max}</b></div><div class="stat"><small>${ab('КЗ')}</small><b>${dv.ac}</b></div>
     <div class="stat"><small>${ab('Ініціат.')}</small><b>${fm(R.mod(sheet.abilities.dex))}</b></div><div class="stat"><small>${ab('Швидк.')}</small><b>${sheet.speed}</b></div>
     <div class="stat"><small>${ab('Майст.')}</small><b>${fm(dv.prof)}</b></div></div>
     <div class="abil mt">${R.ABILITIES.map((a) => `<div class="box"><small>${ab(R.ABILITY_SHORT[a])}</small><div class="m">${fm(R.mod(sheet.abilities[a]))}</div><span class="s">${sheet.abilities[a]}</span></div>`).join('')}</div>
     <div class="card"><small class="hint">Навички: ${Object.keys(sheet.skills).map((k) => R.SKILLS[k][0] + (sheet.skills[k] === 2 ? ' (експ.)' : '')).join(', ')}</small></div>
-    <div class="lines"><h3>Вміння та риси</h3>${featureListHtml(sheet.features || [], { showSrc: true })}</div>`;
+    <div class="lines"><h3>Вміння та риси</h3>${featureListHtml(sheet.features || [], { showSrc: true, showLvl: sheet.level > 1 })}</div>`;
   }
   h += `<div class="card"><h3>Опис (можна заповнити пізніше)</h3>
     <label class="fld"><span>Зовнішність</span><textarea data-bind="wiz.text.appearance" maxlength="4000">${esc(w.text.appearance || '')}</textarea></label>
@@ -968,7 +1114,8 @@ const MODALS = {
 
   roomSettings: (m) => `${hdr('⚙️ Налаштування кімнати')}
     <label class="fld"><span>Назва</span><input data-bind="modal.name" value="${esc(m.name)}" maxlength="60"></label>
-    <button class="btn primary block mt" data-act="renameRoom">Зберегти назву</button>
+    <div class="card">${startLevelHtml('modal.pick', m.pick, 'modal.max', m.max, 'modal')}</div>
+    <button class="btn primary block mt" data-act="renameRoom">Зберегти</button>
     <button class="btn danger block mt2" data-act="deleteRoomForm">🗑 Видалити кімнату</button>`,
 
   deleteRoom: (m) => `${hdr('🗑 Закрити кімнату', esc(S.room.room.name))}
@@ -1355,8 +1502,9 @@ const ACT = {
     const el = document.getElementById('newRoomName');
     const name = el.value.trim();
     if (!name) { toast('Вкажи назву кімнати', true); el.focus(); return; }
-    const r = await run(() => api('createRoom', { name }), 'Кімнату створено');
-    if (r) { await loadMe(true); openRoom(r.room.id); }
+    const nr = S.newRoom;
+    const r = await run(() => api('createRoom', { name, maxStartLevel: nr.pick ? nr.max : 1 }), 'Кімнату створено');
+    if (r) { S.newRoom = { name: '', pick: false, max: 5 }; await loadMe(true); openRoom(r.room.id); }
   },
   joinByCode: async () => {
     const code = document.getElementById('joinCode').value.trim().toUpperCase();
@@ -1419,9 +1567,19 @@ const ACT = {
   copy: async ({ text }) => {
     try { await navigator.clipboard.writeText(text); toast('Скопійовано'); } catch (e) { toast('Не вдалося скопіювати — виділи текст вручну', true); }
   },
-  roomSettings: () => openModal({ type: 'roomSettings', name: S.room.room.name }),
+  roomSettings: () => {
+    const lv = S.room.room.maxStartLevel || 1;
+    openModal({ type: 'roomSettings', name: S.room.room.name, pick: lv > 1, max: lv > 1 ? lv : 5 });
+  },
   renameRoom: async () => {
-    const ok = await run(() => api('renameRoom', { roomId: roomId(), name: S.modal.name }), 'Назву змінено');
+    const m = S.modal;
+    const r = S.room.room;
+    const maxLv = m.pick ? Number(m.max) : 1;
+    const ok = await run(async () => {
+      if (m.name.trim() !== r.name) await api('renameRoom', { roomId: roomId(), name: m.name });
+      if (maxLv !== (r.maxStartLevel || 1)) await api('setRoomOptions', { roomId: roomId(), maxStartLevel: maxLv });
+      return true;
+    }, 'Збережено');
     if (ok) { closeModal(); await loadRoom(true); }
   },
   deleteRoomForm: () => openModal({ type: 'deleteRoom', text: '' }),
@@ -1467,12 +1625,39 @@ const ACT = {
 
   // --- Створення персонажа ---
   startCreate: () => { S.wiz = newWizard(); go('create'); },
-  wizStep: ({ d }) => { S.wiz.step = Math.max(1, Math.min(4, S.wiz.step + Number(d))); render(); window.scrollTo(0, 0); },
+  wizStep: ({ d }) => {
+    const w = S.wiz;
+    if (Number(d) > 0) {
+      const bad = wizFirstError(w.step);
+      if (bad) {
+        toast(bad.err, true);
+        if (bad.step !== w.step) { w.step = bad.step; render(); window.scrollTo(0, 0); }
+        return;
+      }
+    }
+    w.step = Math.max(1, Math.min(wizSteps().length, w.step + Number(d)));
+    render(); window.scrollTo(0, 0);
+  },
+  wizAsiMode: ({ l, m }) => { S.wiz.asi[l] = { mode: m, asi: {}, feat: { id: '', ability: '', skills: [] } }; render(); },
+  wizAsi: ({ l, a, d }) => {
+    const st = S.wiz.asi[l];
+    const snaps = {};
+    R.buildCharacter(wizInput({ asi: { ...S.wiz.asi, [l]: { mode: 'asi', asi: {} } } }), { snaps });
+    const base = snaps[l] ? snaps[l].abilities[a] : 0;
+    const sum = Object.values(st.asi).reduce((t, v) => t + v, 0);
+    const v = (st.asi[a] || 0) + Number(d);
+    if (v < 0 || v > 2) return;
+    if (Number(d) > 0 && sum >= 2) { toast('Вже розподілено 2 очки', true); return; }
+    if (base + v > 20) { toast('Максимум 20', true); return; }
+    if (v) st.asi[a] = v; else delete st.asi[a];
+    render();
+  },
+  wizFeatAbility: ({ l, a }) => { S.wiz.asi[l].feat.ability = a; render(); },
   wizMethod: ({ m }) => { S.wiz.method = m; S.wiz.assign = {}; render(); },
   roll: async () => {
     if (S.wiz.rolls && !(await confirmBox('Перекинути кубики? Майстер побачить обидва кидки в журналі.'))) return;
     const r = await run(() => api('rollAbilities', { roomId: roomId() }));
-    if (r) { S.wiz.rolls = r.rolls; S.wiz.assign = {}; render(); }
+    if (r) { S.wiz.rolls = r.rolls; S.wiz.assign = {}; if (S.room) S.room.lastRoll = r.rolls; render(); }
   },
   pb: ({ a, d }) => {
     const w = S.wiz;
@@ -1499,6 +1684,8 @@ const ACT = {
   },
   createChar: async () => {
     const w = S.wiz;
+    const bad = wizFirstError(wizSteps().length);
+    if (bad) { toast(bad.err, true); if (bad.step !== w.step) { w.step = bad.step; render(); window.scrollTo(0, 0); } return; }
     const r = await run(() => api('createCharacter', { roomId: roomId(), method: w.method, input: wizInput() }), '🎉 Персонажа створено!');
     if (r) { S.wiz = null; S.nav.pop(); S.tab = 'sheet'; await loadRoom(); }
   },
@@ -1961,6 +2148,7 @@ document.addEventListener('input', (e) => {
   if (!el.dataset || !el.dataset.bind || el.tagName === 'SELECT' || el.type === 'checkbox') return;
   setPath(el.dataset.bind, elValue(el));
   if (el.dataset.live === 'catalog') { const box = document.getElementById('catList'); if (box) box.innerHTML = catalogListHtml(); }
+  if (el.dataset.bind.startsWith('wiz.')) updateWizNav();
 });
 document.addEventListener('change', (e) => {
   const el = e.target;
@@ -1976,7 +2164,9 @@ document.addEventListener('change', (e) => {
   if (el.dataset.onchange && ACT[el.dataset.onchange]) { ACT[el.dataset.onchange]({ value: el.value }); return; }
   if (!el.dataset.bind) return;
   setPath(el.dataset.bind, elValue(el));
+  if (el.dataset.bind.startsWith('wiz.')) wizChanged(el.dataset.bind);
   if ('rerender' in el.dataset) { if (el.dataset.rerender === 'modal') renderModal(); else render(); }
+  else if (el.dataset.bind.startsWith('wiz.')) updateWizNav();
 });
 function getArr(path) { return path.split('.').reduce((o, k) => o[k], S); }
 
