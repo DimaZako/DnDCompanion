@@ -44,6 +44,15 @@ const ab = (k, text = k) => `<span class="abbr" data-act="abbr" data-k="${esc(k)
 const abbrify = (t) => esc(t).replace(ABBR_RE, (m) => `<span class="abbr" data-act="abbr" data-k="${m}">${m}</span>`);
 const compAbbr = (t) => esc(t).replace(/(?<![\p{L}])([ВСМ])(?![\p{L}])/gu, (m) => `<span class="abbr" data-act="abbr" data-k="${m}">${m}</span>`);
 const LOGO = (cls = 'logo-img') => `<picture><source srcset="img/logo.webp" type="image/webp"><img class="${cls}" src="img/logo.png" alt="DnD Companion" width="512" height="512"></picture>`;
+const SUPPORT_URL = 'https://send.monobank.ua/jar/8navh2xeC2';
+const CONTACT_EMAIL = 'alzadnicenko@gmail.com';
+const CONTACT_TG = 'Gregolar';
+const footerHtml = () => `<footer class="foot">
+  <a href="${SUPPORT_URL}" data-act="openExt" data-url="${SUPPORT_URL}">💙 Підтримати проект</a>
+  <div class="foot-q">Питання та пропозиції:</div>
+  <a href="mailto:${CONTACT_EMAIL}" data-act="mail" data-addr="${CONTACT_EMAIL}">${CONTACT_EMAIL}</a> <span class="hint">(gmail)</span><br>
+  <a href="https://t.me/${CONTACT_TG}" data-act="openTg" data-url="https://t.me/${CONTACT_TG}">@${CONTACT_TG}</a> <span class="hint">(телеграм)</span>
+</footer>`;
 const SRC_LABEL = { race: 'Раса', class: 'Клас', subclass: 'Підклас', choice: 'Вибір', feat: 'Риса', custom: 'Від майстра' };
 const moneyStr = (m) => R.COINS.filter((k) => m && m[k]).map((k) => `${m[k]} ${R.COIN_NAMES[k]}`).join(', ') || '0';
 
@@ -302,7 +311,7 @@ const VIEWS = {
         <span><b>Майстер</b><small>Створюй кімнати, видавай предмети, керуй персонажами гравців</small></span></button>
       <button class="role-card ${u.role === 'player' ? 'active' : ''}" data-act="pickRole" data-role="player"><span class="ic">⚔️</span>
         <span><b>Гравець</b><small>Приєднуйся до кімнати й веди свого персонажа</small></span></button>
-    </div>`;
+    </div>${footerHtml()}`;
   },
 
   masterHome: () => {
@@ -317,7 +326,7 @@ const VIEWS = {
     <h3 class="sec">Мої кімнати</h3>
     ${rooms.length ? rooms.map((r) => `<div class="card tap list-item" data-act="openRoom" data-id="${esc(r.id)}">
       <div class="ava">🏰</div><div class="meta"><b>${esc(r.name)}</b><small>Код ${esc(r.id)} · гравців ${r.players}/${S.me.maxPlayers} · сесія ${r.session}</small></div><span class="chev">›</span></div>`).join('')
-    : empty('🏰', 'Ще немає кімнат. Створи першу вище.')}`;
+    : empty('🏰', 'Ще немає кімнат. Створи першу вище.')}${footerHtml()}`;
   },
 
   playerHome: () => {
@@ -333,7 +342,7 @@ const VIEWS = {
       <div class="ava">${r.character ? (CLASS_ICON[r.character.classId] || '🧝') : '🎲'}</div>
       <div class="meta"><b>${esc(r.name)}</b><small>${r.character ? `${esc(r.character.name)} · ${esc(R.CLASSES[r.character.classId] ? R.CLASSES[r.character.classId].name : '')} ${r.character.level} рів.` : 'Персонаж не створений'} · майстер ${esc(r.masterName || '')}</small>
       ${r.character && r.character.pendingLevel ? '<span class="badge gold">⬆️ новий рівень</span>' : ''}</div><span class="chev">›</span></div>`).join('')
-    : empty('🗝️', 'Ти ще не в жодній кімнаті.')}`;
+    : empty('🗝️', 'Ти ще не в жодній кімнаті.')}${footerHtml()}`;
   },
 
   join: (v) => `<div class="center-screen"><div style="font-size:60px">📜</div><h2>Запрошення до гри</h2>
@@ -1390,6 +1399,12 @@ const ACT = {
     showTip(el, `${name} (${R.ABILITY_NAMES[a]})`, body);
   },
   tipClose: () => hideTip(),
+  openExt: ({ url }) => { if (tg && tg.openLink) tg.openLink(url); else window.open(url, '_blank'); },
+  openTg: ({ url }) => { if (tg && tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank'); },
+  mail: async ({ addr }) => {
+    try { await navigator.clipboard.writeText(addr); toast(`Адресу скопійовано: ${addr}`); } catch (e) { toast(addr); }
+    setTimeout(() => { window.location.href = `mailto:${addr}`; }, 150);
+  },
   openChar: ({ id }) => { S.tab = 'sheet'; go('char', { charId: Number(id) }); },
   tab: ({ tab }) => { S.tab = tab; tapFx(); render(); },
 

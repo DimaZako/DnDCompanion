@@ -246,3 +246,10 @@ details.archive summary::-webkit-details-marker { display: none; }
 details.archive summary::after { content: '›'; margin-left: auto; color: var(--hint); font-size: 20px; transition: transform .15s; }
 details.archive[open] summary::after { transform: rotate(90deg); }
 details.archive summary b { font-family: var(--serif); font-size: 17px; }
+
+/* Підвал: підтримка й контакти */
+.foot { margin: 34px 0 6px; text-align: center; font-size: 13px; line-height: 1.7; color: var(--hint); }
+.foot a { color: var(--link); text-decoration: none; }
+.foot a:active { opacity: .7; }
+.foot .foot-q { margin-top: 10px; }
+.foot .hint { font-size: 12px; }
