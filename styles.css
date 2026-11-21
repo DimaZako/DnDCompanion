@@ -375,3 +375,38 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .help-actions .btn.sm { white-space: nowrap; }
 .help-actions .btn.primary { flex: 1; }
 .card.help-for { font-size: 14px; line-height: 1.4; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+
+/* ===== Кидки кубиків (вкладка 🎲) ===== */
+.nw { white-space: nowrap; }
+.tabs .tab-dice { flex: 0 0 52px; font-size: 18px; }
+.dice-box .fld { margin-top: 6px; }
+.dice-purpose { width: 100%; }
+.dice-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 4px 0 10px; }
+.die { position: relative; }
+.die-b { width: 100%; height: 56px; border-radius: 14px; background: var(--soft); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  border: 1.5px solid transparent; transition: transform .08s; }
+.die-b:active { transform: scale(.95); }
+.die-n { font-weight: 800; font-size: 17px; }
+.die-c { font-size: 12px; font-weight: 700; color: var(--accent); }
+.die.on .die-b { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--soft)); }
+.die-m { position: absolute; top: -7px; right: -7px; width: 24px; height: 24px; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 1.5px var(--accent);
+  font-weight: 800; font-size: 15px; line-height: 1; color: var(--accent); }
+.dice-mod { margin-top: 4px; gap: 10px; }
+.dice-modv { min-width: 40px; text-align: center; font-size: 18px; }
+.dice-modes { justify-content: center; }
+.dice-modes .chip.disabled { opacity: .45; }
+.dice-res { text-align: center; padding: 14px 12px; }
+.dice-total { font-size: 44px; font-weight: 800; line-height: 1.1; margin: 4px 0; animation: dicePop .35s ease-out; }
+.dice-bd { font-size: 14px; color: var(--hint); }
+.dice-bd b, .dice-h b { color: var(--text); }
+.dice-bd s, .dice-h s { opacity: .55; }
+.dice-res.nat20 { box-shadow: inset 0 0 0 2px var(--gold); }
+.dice-res.nat20 .dice-total { color: var(--gold); }
+.dice-res.nat1 { box-shadow: inset 0 0 0 2px var(--danger); }
+.dice-res.nat1 .dice-total { color: var(--danger); }
+.dice-res .badge { margin-top: 8px; }
+.dice-h { align-items: flex-start; gap: 10px; }
+.dice-h .v { font-size: 18px; }
+.dice-h .v.c20 { color: var(--gold); }
+.dice-h .v.c1 { color: var(--danger); }
+@keyframes dicePop { 0% { transform: scale(.6) rotate(-8deg); opacity: 0; } 70% { transform: scale(1.12) rotate(2deg); opacity: 1; } 100% { transform: scale(1) rotate(0); } }

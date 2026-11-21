@@ -301,7 +301,7 @@ export function weaponAttack(sheet, d) {
   const hit = abMod + (noProf ? 0 : sheetProf(sheet)) + magic + (d.ranged && hasStyle(sheet, 'archery') ? 2 : 0);
   const dmgMod = abMod + magic;
   const dmg = d.damage ? `${d.damage}${dmgMod ? (dmgMod > 0 ? '+' + dmgMod : dmgMod) : ''} ${d.dmgType || ''}`.trim() : '—';
-  return { hit, dmg, noProf };
+  return { hit, dmg, noProf, dmgMod };
 }
 
 export function passivePerception(sheet) {

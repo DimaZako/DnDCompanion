@@ -30,7 +30,12 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_logs_room ON logs(room_id, session)`,
   `CREATE TABLE IF NOT EXISTS master_items (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL, data TEXT NOT NULL, created_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS idx_master_items_owner ON master_items(owner_id)`,
+  // кидки кубиків гравців (історія на вкладці «Кидки»)
+  `CREATE TABLE IF NOT EXISTS dice_rolls (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, char_id INTEGER NOT NULL, user_id INTEGER NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_dice_char ON dice_rolls(char_id, id)`,
 ];
+const DICE_SIDES = [4, 6, 8, 10, 12, 20, 100];
+const DICE_HISTORY = 15;
 const MAX_MY_ITEMS = 500;
 
 const MAX_PLAYERS = 10;
@@ -328,6 +333,8 @@ async function loadItems(c, charIds) {
 }
 async function fullChar(c, ch) {
   ch.items = await loadItems(c, [ch.id]);
+  ch.rolls = (await all(c.db, 'SELECT id, ts, data FROM dice_rolls WHERE char_id = ? ORDER BY id DESC LIMIT ?', ch.id, DICE_HISTORY))
+    .map((r) => ({ id: r.id, ts: r.ts, ...JSON.parse(r.data) }));
   return ch;
 }
 
@@ -860,6 +867,56 @@ const OPS = {
   },
   async deleteMyItem(c, { id }) {
     await run(c.db, 'DELETE FROM master_items WHERE id = ? AND owner_id = ?', int(id, 0, 1e12, 0), c.user.id);
+  },
+
+  // Кидок кубиків гравцем: сервер кидає, результат іде в історію персонажа й у журнал майстра
+  async rollDice(c, { charId, kind, key, dice, mod, mode }) {
+    const { ch, room } = await charAccess(c, charId, { owner: true });
+    const s = ch.sheet;
+    const counts = DICE_SIDES.map((sd) => [sd, int(dice && dice[sd], 0, 20, 0)]).filter(([, n]) => n > 0);
+    const totalDice = counts.reduce((a, [, n]) => a + n, 0);
+    if (!totalDice) fail('Обери хоча б один кубик');
+    if (totalDice > 40) fail('Забагато кубиків (максимум 40)');
+    const m = int(mod, -50, 50, 0);
+    const adv = mode === 'adv' || mode === 'dis' ? mode : '';
+    // що саме кидаємо — підпис для історії й журналу
+    let label = 'Довільний кидок';
+    if (kind === 'init') label = 'Ініціатива';
+    else if ((kind === 'ability' || kind === 'save') && R.ABILITY_NAMES[key]) label = `${kind === 'save' ? 'Рятівний кидок' : 'Перевірка'}: ${R.ABILITY_NAMES[key]}`;
+    else if (kind === 'skill' && R.SKILLS[key]) label = R.SKILLS[key][0];
+    else if (kind === 'attack' || kind === 'damage') {
+      const it = await first(c.db, 'SELECT data FROM items WHERE id = ? AND char_id = ?', int(key, 0, 1e12, 0), ch.id);
+      if (!it) fail('Предмет не знайдено (можливо, його вже змінили). Онови екран.');
+      label = `${kind === 'attack' ? 'Атака' : 'Шкода'}: ${JSON.parse(it.data).name}`;
+    }
+    const groups = counts.map(([sides, n]) => {
+      const rolls = [];
+      const kept = [];
+      for (let i = 0; i < n; i++) {
+        if (sides === 20 && adv) {
+          const a = R.rollDie(20); const b = R.rollDie(20);
+          rolls.push(a, b);
+          kept.push(adv === 'adv' ? Math.max(a, b) : Math.min(a, b));
+        } else { const v = R.rollDie(sides); rolls.push(v); kept.push(v); }
+      }
+      return { s: sides, n, r: rolls, k: kept };
+    });
+    const total = groups.reduce((a, g) => a + g.k.reduce((x, y) => x + y, 0), 0) + m;
+    const d20 = groups.find((g) => g.s === 20);
+    const crit = d20 && d20.n === 1 && totalDice === 1 ? (d20.k[0] === 20 ? 20 : d20.k[0] === 1 ? 1 : 0) : 0;
+    const data = { label, kind: kind || 'free', groups, mod: m, mode: adv, total, crit };
+    const ts = now();
+    const r = await run(c.db, 'INSERT INTO dice_rolls (room_id, char_id, user_id, ts, data) VALUES (?, ?, ?, ?, ?)', room.id, ch.id, c.user.id, ts, JSON.stringify(data));
+    // тримаємо лише останні кидки персонажа
+    await run(c.db, `DELETE FROM dice_rolls WHERE char_id = ? AND id NOT IN (SELECT id FROM dice_rolls WHERE char_id = ? ORDER BY id DESC LIMIT 50)`, ch.id, ch.id);
+    const expr = groups.map((g) => {
+      const name = `${g.n > 1 ? g.n : ''}к${g.s}`;
+      if (g.s === 20 && adv) return `${name} ${adv === 'adv' ? 'з перевагою' : 'з перешкодою'} (${g.r.join(', ')})`;
+      return `${name} (${g.r.join(', ')})`;
+    }).join(' + ') + (m ? ` ${m > 0 ? '+' : '−'} ${Math.abs(m)}` : '');
+    const critTxt = crit === 20 ? ' · природна 20!' : crit === 1 ? ' · природна 1' : '';
+    await addLog(c, room, `🎲 ${label}: ${expr} = ${total}${critTxt}`, charActor(c, ch));
+    return { roll: { id: r.meta && r.meta.last_row_id, ts, ...data } };
   },
 
   // Гравець просить майстра допомогти створити персонажа (або скасовує прохання)

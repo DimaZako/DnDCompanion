@@ -572,11 +572,109 @@ function charHtml(ch, M) {
   }
   // «Лист» тут — аркуш персонажа (не предмет «лист»), тому окремий ключ перекладу
   const tabs = [['sheet', LANG === 'uk' ? 'Лист' : t('Лист персонажа (вкладка)')], ['spells', 'Вміння'], ['info', 'Інфо'], ['inv', 'Інвентар']];
-  h += `<div class="tabs">${tabs.map(([k, l]) => `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"${k === 'sheet' ? ' data-notr' : ''}>${l}</button>`).join('')}</div>`;
-  if (S.tab === 'spells') h += spellsTab(ch, dv, M);
+  // кидки кубиків — лише гравцеві на власному листі
+  const canRoll = !M && !isRO();
+  if (canRoll) tabs.push(['dice', '🎲']);
+  if (S.tab === 'dice' && !canRoll) S.tab = 'sheet';
+  h += `<div class="tabs">${tabs.map(([k, l]) => `<button class="${S.tab === k ? 'on' : ''}${k === 'dice' ? ' tab-dice' : ''}" data-act="tab" data-tab="${k}"${k === 'sheet' ? ' data-notr' : ''}${k === 'dice' ? ` aria-label="${esc(t('Кидки'))}"` : ''}>${l}</button>`).join('')}</div>`;
+  if (S.tab === 'dice') h += diceTab(ch, dv);
+  else if (S.tab === 'spells') h += spellsTab(ch, dv, M);
   else if (S.tab === 'info') h += infoTab(ch);
   else if (S.tab === 'inv') h += invTab(ch, M);
   else h += sheetTab(ch, dv);
+  return h;
+}
+
+// ================= Кидки кубиків =================
+const DICE = [4, 6, 8, 10, 12, 20, 100];
+function diceState(ch) {
+  if (!S.dice || S.dice.charId !== ch.id) S.dice = { charId: ch.id, purpose: 'free', dice: { 20: 1 }, mod: 0, mode: '', last: null };
+  return S.dice;
+}
+const charWeapons = (ch) => (ch.items || []).map((it) => ({ it, d: withBase(it.data) }))
+  .filter(({ d }) => d.type === 'weapon' || (['staff', 'rod'].includes(d.type) && d.damage))
+  .sort((a, b) => Number(b.it.equipped) - Number(a.it.equipped));
+// Кубики й модифікатор, що відповідають меті кидка (null — довільний кидок)
+function diceAuto(ch, purpose) {
+  const s = ch.sheet;
+  const [kind, key] = String(purpose).split(':');
+  const d20 = { 20: 1 };
+  if (kind === 'init') return { dice: d20, mod: derived(ch).init };
+  if (kind === 'ability' && s.abilities[key] != null) return { dice: d20, mod: R.mod(s.abilities[key]) };
+  if (kind === 'save' && s.abilities[key] != null) return { dice: d20, mod: R.saveValue(s, key) };
+  if (kind === 'skill' && R.SKILLS[key]) return { dice: d20, mod: R.skillValue(s, key) };
+  if (kind === 'attack' || kind === 'damage') {
+    const w = charWeapons(ch).find(({ it }) => String(it.id) === key);
+    if (!w) return null;
+    const a = R.weaponAttack(s, w.d);
+    if (kind === 'attack') return { dice: d20, mod: a.hit };
+    const m = /(\d*)\s*к\s*(\d+)/.exec(String(w.d.damage || ''));
+    if (!m || !DICE.includes(Number(m[2]))) return null;
+    return { dice: { [m[2]]: Number(m[1] || 1) }, mod: a.dmgMod };
+  }
+  return null;
+}
+const diceExpr = (st) => DICE.filter((sd) => st.dice[sd]).map((sd) => `${st.dice[sd]}к${sd}`).join('+') + (st.mod ? fm(st.mod) : '');
+// Розклад кидка: «к20: 17 ̶4̶ · 2к6: 3, 5 · +3»
+function rollBreakdown(r) {
+  const parts = r.groups.map((g) => {
+    let vals;
+    if (g.s === 20 && r.mode) {
+      vals = [];
+      for (let i = 0; i < g.r.length; i += 2) {
+        const keep = g.k[i / 2];
+        const other = g.r[i] === keep ? g.r[i + 1] : g.r[i];
+        vals.push(`<b>${keep}</b> <s>${other}</s>`);
+      }
+    } else vals = g.r.map((v) => `<b>${v}</b>`);
+    return `<span class="nw">${g.n > 1 ? g.n : ''}к${g.s}: ${vals.join(', ')}</span>`;
+  });
+  if (r.mod) parts.push(`<span class="nw">${fm(r.mod)}</span>`);
+  return parts.join(' · ');
+}
+const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString(LOCALES[LANG], { hour: '2-digit', minute: '2-digit' });
+
+function diceTab(ch, dv) {
+  const s = ch.sheet;
+  const st = diceState(ch);
+  const auto = diceAuto(ch, st.purpose);
+  const opt = (v, l) => `<option value="${esc(v)}" ${st.purpose === v ? 'selected' : ''}>${esc(l)}</option>`;
+  const og = (label, items) => (items.length ? `<optgroup label="${esc(t(label))}">${items.map(([v, l]) => opt(v, l)).join('')}</optgroup>` : '');
+  const weapons = charWeapons(ch);
+  const sel = `<select class="dice-purpose" data-onchange="dicePurpose">
+    ${opt('free', 'Довільний кидок')}${opt('init', `Ініціатива (${fm(dv.init)})`)}
+    ${og('Перевірки характеристик', R.ABILITIES.map((a) => [`ability:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.mod(s.abilities[a]))})`]))}
+    ${og('Рятівні кидки', R.ABILITIES.map((a) => [`save:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.saveValue(s, a))})`]))}
+    ${og('Навички', R.SKILL_IDS.map((k) => [`skill:${k}`, `${R.SKILLS[k][0]} (${fm(R.skillValue(s, k))})`]))}
+    ${og('Атаки', weapons.map(({ it, d }) => [`attack:${it.id}`, `${d.name} (${fm(R.weaponAttack(s, d).hit)})`]))}
+    ${og('Шкода', weapons.filter(({ d }) => d.damage).map(({ it, d }) => [`damage:${it.id}`, `${d.name} (${R.weaponAttack(s, d).dmg})`]))}
+  </select>`;
+  const any = DICE.some((sd) => st.dice[sd]);
+  let h = `<div class="lines dice-box"><h3>🎲 Кидок</h3>
+    <label class="fld"><span>На що</span>${sel}</label>
+    <div class="fld"><span>Кубики</span></div>
+    <div class="dice-grid">${DICE.map((sd) => {
+    const n = st.dice[sd] || 0;
+    return `<div class="die ${n ? 'on' : ''}"><button class="die-b" data-act="dieAdd" data-s="${sd}"><span class="die-n">к${sd}</span>${n ? `<span class="die-c">×${n}</span>` : ''}</button>${n ? `<button class="die-m" data-act="dieSub" data-s="${sd}" aria-label="Менше">−</button>` : ''}</div>`;
+  }).join('')}</div>
+    <div class="row dice-mod"><span class="grow">Модифікатор</span>
+      ${auto && auto.mod !== st.mod ? `<button class="link" data-act="diceModAuto">авто ${fm(auto.mod)}</button>` : ''}
+      <div class="stepper"><button data-act="diceMod" data-d="-1" aria-label="Менше">−</button><b class="dice-modv">${fm(st.mod)}</b><button data-act="diceMod" data-d="1" aria-label="Більше">+</button></div></div>
+    <div class="chips dice-modes">${[['adv', 'Перевага'], ['', 'Звичайний'], ['dis', 'Перешкода']].map(([v, l]) => `<button class="chip ${st.mode === v ? 'on' : ''} ${st.dice[20] ? '' : 'disabled'}" data-act="diceMode" data-v="${v}">${l}</button>`).join('')}</div>
+    <button class="btn primary block mt ${any ? '' : 'disabled'}" data-act="rollDice">🎲 Кинути <span class="nw">${diceExpr(st)}</span></button>
+    <div class="row mt"><small class="hint grow">Кидок робить сервер, майстер бачить його в журналі.</small><button class="link" data-act="diceReset">Скинути</button></div></div>`;
+  const r = st.last;
+  if (r) {
+    h += `<div class="card dice-res${r.crit === 20 ? ' nat20' : r.crit === 1 ? ' nat1' : ''}" data-id="${r.id}">
+      <small class="hint">${esc(r.label)}${r.mode ? ` · ${r.mode === 'adv' ? 'перевага' : 'перешкода'}` : ''}</small>
+      <div class="dice-total">${r.total}</div>
+      <div class="dice-bd">${rollBreakdown(r)}</div>
+      ${r.crit === 20 ? '<span class="badge gold">природна 20!</span>' : r.crit === 1 ? '<span class="badge red">природна 1</span>' : ''}</div>`;
+  }
+  const hist = ch.rolls || [];
+  h += `<div class="lines"><h3>Історія кидків</h3>${hist.length ? hist.map((x) => `<div class="ln dice-h"><span class="hint nw">${fmtTime(x.ts)}</span>
+    <span class="grow"><span>${esc(x.label)}</span><br><small class="hint">${rollBreakdown(x)}</small></span><b class="v${x.crit === 20 ? ' c20' : x.crit === 1 ? ' c1' : ''}">${x.total}</b></div>`).join('')
+    : '<div class="ln hint">Кидків ще не було</div>'}</div>`;
   return h;
 }
 
@@ -1968,6 +2066,43 @@ const ACT = {
   },
   openChar: ({ id }) => { S.tab = 'sheet'; go('char', { charId: Number(id) }); },
   tab: ({ tab }) => { S.tab = tab; tapFx(); render(); },
+  // кидки кубиків
+  dicePurpose: ({ value }) => {
+    const ch = S.room && S.room.character;
+    if (!ch) return;
+    const st = diceState(ch);
+    st.purpose = value;
+    const a = diceAuto(ch, value);
+    if (a) { st.dice = { ...a.dice }; st.mod = a.mod; } else st.mod = 0;
+    // перевага/перешкода — ситуативні, для нової мети скидаються
+    st.mode = '';
+    render();
+  },
+  dieAdd: ({ s }) => { const st = S.dice; if (!st) return; st.dice[s] = Math.min(20, (st.dice[s] || 0) + 1); tapFx(); render(); },
+  dieSub: ({ s }) => {
+    const st = S.dice; if (!st) return;
+    st.dice[s] = Math.max(0, (st.dice[s] || 0) - 1);
+    if (!st.dice[s]) delete st.dice[s];
+    if (!st.dice[20]) st.mode = '';
+    tapFx(); render();
+  },
+  diceMod: ({ d }) => { const st = S.dice; if (!st) return; st.mod = Math.max(-50, Math.min(50, st.mod + Number(d))); tapFx(); render(); },
+  diceModAuto: () => { const ch = S.room && S.room.character; const a = ch && diceAuto(ch, S.dice.purpose); if (a) { S.dice.mod = a.mod; render(); } },
+  diceMode: ({ v }) => { const st = S.dice; if (!st || !st.dice[20]) return; st.mode = v; tapFx(); render(); },
+  diceReset: () => { const st = S.dice; if (!st) return; Object.assign(st, { purpose: 'free', dice: { 20: 1 }, mod: 0, mode: '' }); render(); },
+  rollDice: async () => {
+    const ch = S.room && S.room.character;
+    const st = S.dice;
+    if (!ch || !st) return;
+    if (!DICE.some((sd) => st.dice[sd])) { toast('Обери хоча б один кубик', true); return; }
+    const [kind, key] = st.purpose.split(':');
+    const r = await run(() => api('rollDice', { charId: ch.id, kind, key, dice: st.dice, mod: st.mod, mode: st.mode }));
+    if (!r) return;
+    st.last = r.roll;
+    ch.rolls = [r.roll, ...(ch.rolls || []).filter((x) => x.id !== r.roll.id)].slice(0, 15);
+    if (r.roll.crit) haptic(r.roll.crit === 20 ? 'success' : 'warning');
+    render();
+  },
 
   invite: () => openModal({ type: 'invite' }),
   shareInvite: () => {
