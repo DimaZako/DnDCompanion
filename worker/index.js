@@ -2,6 +2,19 @@
 // Маршрути: POST /api (Mini App), POST /bot (вебхук Telegram), GET /setup (налаштування бота)
 import * as R from '../shared/rules.js';
 import { CATALOG_BY_ID } from '../data/items.js';
+import { compile, translate, normLang, langFromTg, LOCALES } from '../shared/i18n.js';
+import RU from '../i18n/ru.js';
+import EN from '../i18n/en.js';
+
+// Переклад повідомлень бота й журналу мовою отримувача (тексти в коді — українською)
+const DICTS = {};
+function dictFor(lang) {
+  lang = normLang(lang);
+  if (lang === 'uk') return null;
+  if (!DICTS[lang]) DICTS[lang] = compile(lang === 'ru' ? RU : EN, lang);
+  return DICTS[lang];
+}
+const tr = (lang, s) => { const D = dictFor(lang); return D ? translate(D, s) : s; };
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, first_name TEXT, username TEXT, role TEXT, created_at INTEGER, updated_at INTEGER)`,
@@ -64,6 +77,8 @@ function ensureSchema(db) {
       .then(() => db.prepare('ALTER TABLE rooms ADD COLUMN version INTEGER NOT NULL DEFAULT 0').run().catch(() => {}))
       // максимальний початковий рівень персонажів (1 — лише з першого)
       .then(() => db.prepare('ALTER TABLE rooms ADD COLUMN max_start_level INTEGER NOT NULL DEFAULT 1').run().catch(() => {}))
+      // мова інтерфейсу й сповіщень користувача (uk / ru / en)
+      .then(() => db.prepare('ALTER TABLE users ADD COLUMN lang TEXT').run().catch(() => {}))
       .catch((e) => { schemaReady = null; throw e; });
   }
   return schemaReady;
@@ -137,10 +152,23 @@ async function botUsername(env) {
   return cachedBotUsername || env.BOT_USERNAME || '';
 }
 
+// Мова користувача (кешується в межах запиту)
+function userLang(c, id) {
+  if (id === c.user.id) return Promise.resolve(c.user.lang);
+  if (!c.langs) c.langs = new Map();
+  if (!c.langs.has(id)) c.langs.set(id, first(c.db, 'SELECT lang FROM users WHERE id = ?', id).then((r) => normLang(r && r.lang)).catch(() => 'uk'));
+  return c.langs.get(id);
+}
 function notify(c, chatId, text) {
   if (!chatId || !c.env.BOT_TOKEN) return;
-  const p = tg(c.env, 'sendMessage', { chat_id: chatId, text, disable_web_page_preview: true }).catch(() => {});
+  const p = userLang(c, chatId)
+    .then((lang) => tg(c.env, 'sendMessage', { chat_id: chatId, text: tr(lang, text), disable_web_page_preview: true }))
+    .catch(() => {});
   if (c.ctx && c.ctx.waitUntil) c.ctx.waitUntil(p);
+}
+// Кнопка меню бота мовою користувача
+function menuButton(env, chatId, lang) {
+  return tg(env, 'setChatMenuButton', { chat_id: chatId, menu_button: { type: 'web_app', text: tr(lang, '🎲 Грати'), web_app: { url: env.APP_URL } } });
 }
 
 // ---------------- /setup ----------------
@@ -157,18 +185,26 @@ async function handleSetup(url, env) {
   results.setChatMenuButton = await tg(env, 'setChatMenuButton', {
     menu_button: { type: 'web_app', text: '🎲 Грати', web_app: { url: appUrl } },
   });
-  results.setMyCommands = await tg(env, 'setMyCommands', {
-    commands: [
-      { command: 'start', description: 'Відкрити DnD Companion' },
-      { command: 'help', description: 'Як користуватися ботом' },
-    ],
-  });
-  results.setMyDescription = await tg(env, 'setMyDescription', {
-    description: 'DnD Companion — листи персонажів D&D 5e, інвентар і кімнати для майстра та гравців прямо в Telegram. Натисни «Почати», щоб відкрити застосунок.',
-  });
-  results.setMyShortDescription = await tg(env, 'setMyShortDescription', {
-    short_description: 'Листи персонажів, інвентар і кімнати D&D 5e для майстра та гравців.',
-  });
+  // типові тексти — українською, плюс окремі для російської та англійської мов Telegram
+  for (const [lang, code] of [['uk', null], ['uk', 'uk'], ['ru', 'ru'], ['en', 'en']]) {
+    const lc = code ? { language_code: code } : {};
+    const sfx = code || 'default';
+    results[`setMyCommands_${sfx}`] = await tg(env, 'setMyCommands', {
+      ...lc,
+      commands: [
+        { command: 'start', description: tr(lang, 'Відкрити DnD Companion') },
+        { command: 'help', description: tr(lang, 'Як користуватися ботом') },
+      ],
+    });
+    results[`setMyDescription_${sfx}`] = await tg(env, 'setMyDescription', {
+      ...lc,
+      description: tr(lang, 'DnD Companion — листи персонажів D&D 5e, інвентар і кімнати для майстра та гравців прямо в Telegram. Натисни «Почати», щоб відкрити застосунок.'),
+    });
+    results[`setMyShortDescription_${sfx}`] = await tg(env, 'setMyShortDescription', {
+      ...lc,
+      short_description: tr(lang, 'Листи персонажів, інвентар і кімнати D&D 5e для майстра та гравців.'),
+    });
+  }
   const ok = Object.values(results).every((r) => r && r.ok);
   return json({ ok, appUrl, webhook: `${url.origin}/bot`, results });
 }
@@ -182,11 +218,16 @@ async function handleBot(request, env) {
   if (!msg || !msg.chat || msg.chat.type !== 'private') return new Response('ok');
   const text = (msg.text || '').trim();
   const appUrl = env.APP_URL;
+  // мова відповіді: обрана в застосунку, інакше мова Telegram
+  await ensureSchema(env.DB);
+  const urow = msg.from ? await first(env.DB, 'SELECT lang FROM users WHERE id = ?', msg.from.id).catch(() => null) : null;
+  const lang = normLang((urow && urow.lang) || langFromTg(msg.from && msg.from.language_code));
+  const L = (s) => tr(lang, s);
   if (text.startsWith('/help')) {
     await tg(env, 'sendMessage', {
       chat_id: msg.chat.id,
-      text: 'Як грати:\n\n🧙 Майстер: відкрий застосунок → «Майстер» → створи кімнату → надішли гравцям посилання-запрошення.\n\n⚔️ Гравець: відкрий запрошення або введи код кімнати → створи персонажа.\n\nМайстер бачить усіх персонажів, видає предмети з каталогу D&D 5e, змінює характеристики, нараховує досвід. Гравці бачать лише свій лист і інвентар.',
-      reply_markup: { inline_keyboard: [[{ text: '🎲 Відкрити застосунок', web_app: { url: appUrl } }]] },
+      text: L('Як грати:\n\n🧙 Майстер: відкрий застосунок → «Майстер» → створи кімнату → надішли гравцям посилання-запрошення.\n\n⚔️ Гравець: відкрий запрошення або введи код кімнати → створи персонажа.\n\nМайстер бачить усіх персонажів, видає предмети з каталогу D&D 5e, змінює характеристики, нараховує досвід. Гравці бачать лише свій лист і інвентар.'),
+      reply_markup: { inline_keyboard: [[{ text: L('🎲 Відкрити застосунок'), web_app: { url: appUrl } }]] },
     });
     return new Response('ok');
   }
@@ -194,23 +235,22 @@ async function handleBot(request, env) {
   const m = text.match(/^\/start(?:@\w+)?\s+(\S+)/);
   if (m) payload = m[1].replace(/^(join_|room_)/i, '').toUpperCase();
   if (payload && /^[A-Z0-9]{4,10}$/.test(payload)) {
-    await ensureSchema(env.DB);
     const room = await first(env.DB, 'SELECT id, name FROM rooms WHERE id = ? AND deleted = 0', payload);
     if (room) {
       await tg(env, 'sendMessage', {
         chat_id: msg.chat.id,
-        text: `Тебе запросили до кімнати «${room.name}» (код ${room.id}). Натисни кнопку, щоб приєднатися як гравець.`,
-        reply_markup: { inline_keyboard: [[{ text: '⚔️ Приєднатися до гри', web_app: { url: `${appUrl}?room=${room.id}` } }]] },
+        text: L(`Тебе запросили до кімнати «${room.name}» (код ${room.id}). Натисни кнопку, щоб приєднатися як гравець.`),
+        reply_markup: { inline_keyboard: [[{ text: L('⚔️ Приєднатися до гри'), web_app: { url: `${appUrl}?room=${room.id}` } }]] },
       });
       return new Response('ok');
     }
-    await tg(env, 'sendMessage', { chat_id: msg.chat.id, text: `Кімнату з кодом ${payload} не знайдено. Перепитай майстра.` });
+    await tg(env, 'sendMessage', { chat_id: msg.chat.id, text: L(`Кімнату з кодом ${payload} не знайдено. Перепитай майстра.`) });
     return new Response('ok');
   }
   await tg(env, 'sendMessage', {
     chat_id: msg.chat.id,
-    text: 'Вітаю в DnD Companion! 🐉\nТут майстер створює кімнати, а гравці ведуть листи персонажів D&D 5e та інвентар.\n\nНатисни кнопку нижче або «🎲 Грати» біля поля вводу.',
-    reply_markup: { inline_keyboard: [[{ text: '🎲 Відкрити застосунок', web_app: { url: appUrl } }]] },
+    text: L('Вітаю в DnD Companion! 🐉\nТут майстер створює кімнати, а гравці ведуть листи персонажів D&D 5e та інвентар.\n\nНатисни кнопку нижче або «🎲 Грати» біля поля вводу.'),
+    reply_markup: { inline_keyboard: [[{ text: L('🎲 Відкрити застосунок'), web_app: { url: appUrl } }]] },
   });
   return new Response('ok');
 }
@@ -241,11 +281,12 @@ async function handleApi(request, env, ctx) {
 async function upsertUser(db, u) {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 64) || 'Гравець';
   const t = now();
-  await run(db, `INSERT INTO users (id, first_name, username, role, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)
+  // нові користувачі отримують мову свого Telegram; далі її змінює перемикач у застосунку
+  await run(db, `INSERT INTO users (id, first_name, username, role, created_at, updated_at, lang) VALUES (?, ?, ?, NULL, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username, updated_at = excluded.updated_at`,
-  u.id, name, u.username || null, t, t);
+  u.id, name, u.username || null, t, t, langFromTg(u.language_code));
   const row = await first(db, 'SELECT * FROM users WHERE id = ?', u.id);
-  return { id: row.id, name: row.first_name, username: row.username, role: row.role };
+  return { id: row.id, name: row.first_name, username: row.username, role: row.role, lang: normLang(row.lang) };
 }
 
 // ---------------- Допоміжні ----------------
@@ -583,20 +624,21 @@ async function buildLogTxt(c, room, session) {
     ? await all(c.db, 'SELECT * FROM logs WHERE room_id = ? AND session = ? ORDER BY id', room.id, session)
     : await all(c.db, 'SELECT * FROM logs WHERE room_id = ? ORDER BY id', room.id);
   const tz = 'Europe/Kyiv';
-  const fmt = (ts, withDate) => new Date(ts * 1000).toLocaleString('uk-UA', withDate
+  const L = (s) => tr(c.user.lang, s);
+  const fmt = (ts, withDate) => new Date(ts * 1000).toLocaleString(LOCALES[normLang(c.user.lang)], withDate
     ? { timeZone: tz, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }
     : { timeZone: tz, hour: '2-digit', minute: '2-digit' });
   const lines = [];
-  lines.push(`DnD Companion — журнал кімнати «${room.name}» (код ${room.id})`);
-  lines.push(session ? `Сесія ${session}` : 'Повний журнал');
-  lines.push(`Сформовано: ${fmt(now(), true)}`);
+  lines.push(L(`DnD Companion — журнал кімнати «${room.name}» (код ${room.id})`));
+  lines.push(session ? L(`Сесія ${session}`) : L('Повний журнал'));
+  lines.push(L(`Сформовано: ${fmt(now(), true)}`));
   lines.push('='.repeat(48));
   let cur = null;
   for (const r of rows) {
-    if (!session && r.session !== cur) { cur = r.session; lines.push('', `--- Сесія ${cur} ---`); }
-    lines.push(`[${fmt(r.ts, true)}] ${r.actor}: ${r.text}`);
+    if (!session && r.session !== cur) { cur = r.session; lines.push('', L(`--- Сесія ${cur} ---`)); }
+    lines.push(`[${fmt(r.ts, true)}] ${L(r.actor)}: ${L(r.text)}`);
   }
-  if (!rows.length) lines.push('(записів немає)');
+  if (!rows.length) lines.push(L('(записів немає)'));
   return lines.join('\r\n');
 }
 
@@ -639,6 +681,17 @@ const OPS = {
     const ch = parseChar(await first(c.db, 'SELECT * FROM characters WHERE id = ?', row.id));
     ch.items = await loadItems(c, [ch.id]);
     return { character: ch, info: { roomName: row.roomName, roomId: row.roomId, status: row.status, dead: row.dead, createdAt: row.createdAt } };
+  },
+
+  async setLang(c, { lang }) {
+    if (!['uk', 'ru', 'en'].includes(lang)) fail('Невідома дія');
+    await run(c.db, 'UPDATE users SET lang = ? WHERE id = ?', lang, c.user.id);
+    if (c.user.lang !== lang && c.env.BOT_TOKEN) {
+      const p = menuButton(c.env, c.user.id, lang).catch(() => {});
+      if (c.ctx && c.ctx.waitUntil) c.ctx.waitUntil(p);
+    }
+    c.user.lang = lang;
+    return { ok: true, lang };
   },
 
   async setRole(c, { role }) {
@@ -1273,7 +1326,7 @@ const OPS = {
     const room = await requireMaster(c, roomId);
     const txt = await buildLogTxt(c, room, wantAll ? null : room.session);
     const fname = `${room.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}_${wantAll ? 'povnyi' : 'sesiia_' + room.session}.txt`;
-    const r = await sendDocument(c.env, c.user.id, fname, txt, `📜 Журнал «${room.name}»${wantAll ? '' : `, сесія ${room.session}`}`);
+    const r = await sendDocument(c.env, c.user.id, fname, txt, tr(c.user.lang, `📜 Журнал «${room.name}»${wantAll ? '' : `, сесія ${room.session}`}`));
     if (!r.ok) fail('Не вдалося надіслати файл. Відкрий чат із ботом, натисни «Почати» (Start) і спробуй ще раз.');
     return { sent: true };
   },
@@ -1283,7 +1336,7 @@ const OPS = {
     await addLog(c, room, `завершив сесію ${room.session}`);
     const txt = await buildLogTxt(c, room, room.session);
     const fname = `${room.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}_sesiia_${room.session}.txt`;
-    const r = await sendDocument(c.env, c.user.id, fname, txt, `📜 Журнал «${room.name}», сесія ${room.session}`);
+    const r = await sendDocument(c.env, c.user.id, fname, txt, tr(c.user.lang, `📜 Журнал «${room.name}», сесія ${room.session}`));
     await run(c.db, 'UPDATE rooms SET session = session + 1 WHERE id = ?', room.id);
     const members = await all(c.db, 'SELECT user_id FROM members WHERE room_id = ?', room.id);
     for (const m of members) notify(c, m.user_id, `🏁 «${room.name}»\nНа сьогодні подорож завершена... До наступної зустрічі!`);

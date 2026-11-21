@@ -1,6 +1,6 @@
 // Правила D&D 5e (SRD 5.1, CC-BY-4.0), спільні для Mini App і сервера.
 import { CLASS_DATA, FEATS, RACE_TRAITS, RACE_CHOICES, PACT_BOONS, resourceDefs } from './classdata.js';
-import { SPELLS, DOMAIN_SPELLS, OATH_SPELLS, LAND_SPELLS, PATRON_SPELLS } from './spells.js';
+import { SPELLS, SPELL_IDS as SPELL_ORDER, DOMAIN_SPELLS, OATH_SPELLS, LAND_SPELLS, PATRON_SPELLS } from './spells.js';
 import { buildProf, grantProf, weaponProficient, SUBCLASS_PROF, FEAT_PROF } from './gear.js';
 export * from './gear.js';
 export { SPELLS, SPELL_IDS, spellDuration, SPELL_LIST_NAMES } from './spells.js';
@@ -33,9 +33,16 @@ export const SKILLS = {
   stealth: ['Непомітність', 'dex'],
   survival: ['Виживання', 'wis'],
 };
-// У алфавітному порядку української назви
-export const SKILL_IDS = Object.keys(SKILLS).sort((a, b) => SKILLS[a][0].localeCompare(SKILLS[b][0], 'uk'));
-export const sortSkills = (ids) => ids.slice().sort((a, b) => SKILLS[a][0].localeCompare(SKILLS[b][0], 'uk'));
+// У алфавітному порядку назви мовою інтерфейсу (типово українською)
+let skillCmp = (a, b) => SKILLS[a][0].localeCompare(SKILLS[b][0], 'uk');
+export const SKILL_IDS = Object.keys(SKILLS).sort((a, b) => skillCmp(a, b));
+export const sortSkills = (ids) => ids.slice().sort((a, b) => skillCmp(a, b));
+// Перевпорядкувати навички й закляття за перекладеними назвами (tr — функція перекладу)
+export function setNameOrder(tr, locale) {
+  skillCmp = (a, b) => tr(SKILLS[a][0]).localeCompare(tr(SKILLS[b][0]), locale);
+  SKILL_IDS.sort((a, b) => skillCmp(a, b));
+  SPELL_ORDER.sort((a, b) => SPELLS[a].level - SPELLS[b].level || tr(SPELLS[a].name).localeCompare(tr(SPELLS[b].name), locale));
+}
 
 // caster: full | half | pact | none
 export const CLASSES = {

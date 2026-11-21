@@ -3,6 +3,7 @@ import * as R from './shared/rules.js';
 import { CATALOG, BASE_WEAPONS } from './data/items.js';
 import { featureDetails, resourceDetails } from './shared/details.js';
 import { ABBR, ABBR_RE, diceInfo, SKILL_INFO } from './shared/glossary.js';
+import { compile, translate, hasCyr, LANGS, LOCALES, normLang, langFromTg, ABBR_LOC } from './shared/i18n.js';
 
 const tg = window.Telegram && window.Telegram.WebApp;
 const CFG = window.DND_CONFIG || {};
@@ -39,10 +40,90 @@ function withBase(d) {
   }
   return d;
 }
-// Скорочення: тапабельні з довідкою
-const ab = (k, text = k) => `<span class="abbr" data-act="abbr" data-k="${esc(k)}">${esc(text)}</span>`;
-const abbrify = (t) => esc(t).replace(ABBR_RE, (m) => `<span class="abbr" data-act="abbr" data-k="${m}">${m}</span>`);
-const compAbbr = (t) => esc(t).replace(/(?<![\p{L}])([ВСМ])(?![\p{L}])/gu, (m) => `<span class="abbr" data-act="abbr" data-k="${m}">${m}</span>`);
+// ================= Мова інтерфейсу =================
+// Вихідні тексти українською; для RU/EN словник перекладає їх (див. shared/i18n.js).
+let LANG = 'uk';
+let D = null;
+const t = (s) => (D ? translate(D, s) : s);
+const LS_LANG = 'dnd_lang';
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* */ } };
+const NO_AUTO = new Set(['Speed', 'Extra']);
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+let abbrRe = ABBR_RE;
+let abbrBack = null;
+let compRe = /(?<![\p{L}])([ВСМ])(?![\p{L}])/gu;
+const abLoc = (k) => (ABBR_LOC[LANG] && ABBR_LOC[LANG][k]) || k;
+function setupAbbr() {
+  if (LANG === 'uk') { abbrRe = ABBR_RE; abbrBack = null; compRe = /(?<![\p{L}])([ВСМ])(?![\p{L}])/gu; return; }
+  const loc = ABBR_LOC[LANG];
+  abbrBack = new Map(Object.keys(ABBR).map((k) => [loc[k] || k, k]));
+  const auto = [...abbrBack.keys()].filter((v) => v.length > 1 && !NO_AUTO.has(v)).sort((a, b) => b.length - a.length);
+  const d = LANG === 'en' ? 'd' : 'к';
+  abbrRe = new RegExp(`(?<![\\p{L}\\p{N}])(\\d*${d}(?:100|20|12|10|8|6|4)(?![\\p{L}\\p{N}])|${auto.map(escRe).join('|')})(?![\\p{L}])`, 'gu');
+  compRe = new RegExp(`(?<![\\p{L}])([${loc['В']}${loc['С']}${loc['М']}])(?![\\p{L}])`, 'gu');
+}
+// показане скорочення → ключ глосарію (кістки — у вигляді «2к6»)
+const abKey = (m) => (abbrBack ? (abbrBack.get(m) || m.replace(/^(\d*)d(?=\d)/, '$1к')) : m);
+async function applyLang(lang) {
+  lang = normLang(lang);
+  let dict = null;
+  if (lang !== 'uk') dict = compile((await import(`./i18n/${lang}.js`)).default, lang);
+  D = dict;
+  LANG = lang;
+  document.documentElement.lang = lang;
+  if (D && window.DND_I18N_DEBUG) { D.missing = new Set(); D.hits = new Set(); window.DND_I18N = D; }
+  setupAbbr();
+  R.setNameOrder(t, LOCALES[lang]);
+}
+// Переклад готового DOM: текстові вузли та підписи полів (крім [data-notr] і полів введення)
+const seenText = new WeakSet();
+function trText(n) {
+  if (seenText.has(n)) return;
+  seenText.add(n);
+  const v = n.nodeValue;
+  if (!hasCyr(v)) return;
+  const r = translate(D, v);
+  if (r !== v) n.nodeValue = r;
+}
+const TR_ATTRS = ['placeholder', 'title', 'aria-label'];
+const seenAttr = new WeakSet();
+function trAttrs(el) {
+  if (seenAttr.has(el)) return;
+  seenAttr.add(el);
+  for (const a of TR_ATTRS) {
+    const v = el.getAttribute(a);
+    if (v && hasCyr(v)) el.setAttribute(a, translate(D, v));
+  }
+}
+const noTr = (el) => el.hasAttribute('data-notr') || el.tagName === 'TEXTAREA' || el.tagName === 'SCRIPT' || el.tagName === 'STYLE';
+function trTree(root) {
+  if (!D || !root) return;
+  if (root.nodeType === 3) { if (!root.parentElement || !root.parentElement.closest('[data-notr],textarea')) trText(root); return; }
+  if (root.nodeType !== 1 || root.closest('[data-notr],textarea')) return;
+  trAttrs(root);
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => {
+      if (n.nodeType !== 1) return NodeFilter.FILTER_ACCEPT;
+      if (n.hasAttribute('data-notr')) return NodeFilter.FILTER_REJECT;
+      trAttrs(n);
+      return noTr(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+    },
+  });
+  const list = [];
+  while (w.nextNode()) list.push(w.currentNode);
+  list.forEach(trText);
+}
+new MutationObserver((recs) => {
+  if (!D) return;
+  for (const r of recs) for (const n of r.addedNodes) trTree(n);
+}).observe(document.body, { childList: true, subtree: true });
+
+// Скорочення: тапабельні з довідкою (data-k — український ключ глосарію)
+const ab = (k, text) => `<span class="abbr" data-act="abbr" data-k="${esc(k)}" data-notr>${esc(text == null ? abLoc(k) : t(text))}</span>`;
+const wrapNoTr = (h) => (D ? `<span data-notr>${h}</span>` : h);
+const abbrify = (s) => wrapNoTr(esc(t(s)).replace(abbrRe, (m) => `<span class="abbr" data-act="abbr" data-k="${esc(abKey(m))}">${m}</span>`));
+const compAbbr = (s) => wrapNoTr(esc(t(s)).replace(compRe, (m) => `<span class="abbr" data-act="abbr" data-k="${esc(abKey(m))}">${m}</span>`));
 const LOGO = (cls = 'logo-img') => `<picture><source srcset="img/logo.webp" type="image/webp"><img class="${cls}" src="img/logo.png" alt="DnD Companion" width="512" height="512"></picture>`;
 const SUPPORT_URL = 'https://send.monobank.ua/jar/8navh2xeC2';
 const CONTACT_EMAIL = 'alzadnicenko@gmail.com';
@@ -65,6 +146,7 @@ function toast(msg, err = false) {
 }
 function confirmBox(msg) {
   return new Promise((res) => {
+    msg = t(msg);
     if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast('6.2')) tg.showConfirm(msg, (ok) => res(!!ok));
     else res(window.confirm(msg));
   });
@@ -305,7 +387,8 @@ const VIEWS = {
 
   role: () => {
     const u = S.me.user;
-    return `<div class="hero">${LOGO()}<p class="hint">Привіт, ${esc(u.name)}! Обери, ким ти будеш.</p></div>
+    return `<div class="lang-bar"><div class="lang-sw" role="group" aria-label="${esc(t('Мова'))}" data-notr>${LANGS.map(([id, label]) => `<button class="${id === LANG ? 'on' : ''}" data-act="setLang" data-v="${id}" aria-pressed="${id === LANG}">${label}</button>`).join('')}</div></div>
+    <div class="hero">${LOGO()}<p class="hint">Привіт, ${esc(u.name)}! Обери, ким ти будеш.</p></div>
     <div class="role-cards">
       <button class="role-card ${u.role === 'master' ? 'active' : ''}" data-act="pickRole" data-role="master"><span class="ic">🧙</span>
         <span><b>Майстер</b><small>Створюй кімнати, видавай предмети, керуй персонажами гравців</small></span></button>
@@ -468,8 +551,9 @@ function charHtml(ch, M) {
       <button class="btn" data-act="moneyModal" data-mode="set"><span class="e">💰</span>Гроші</button>
       <button class="btn" data-act="charMore"><span class="e">⋯</span>Ще</button></div>`;
   }
-  const tabs = [['sheet', 'Лист'], ['spells', 'Вміння'], ['info', 'Інфо'], ['inv', 'Інвентар']];
-  h += `<div class="tabs">${tabs.map(([k, t]) => `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}">${t}</button>`).join('')}</div>`;
+  // «Лист» тут — аркуш персонажа (не предмет «лист»), тому окремий ключ перекладу
+  const tabs = [['sheet', LANG === 'uk' ? 'Лист' : t('Лист персонажа (вкладка)')], ['spells', 'Вміння'], ['info', 'Інфо'], ['inv', 'Інвентар']];
+  h += `<div class="tabs">${tabs.map(([k, l]) => `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"${k === 'sheet' ? ' data-notr' : ''}>${l}</button>`).join('')}</div>`;
   if (S.tab === 'spells') h += spellsTab(ch, dv, M);
   else if (S.tab === 'info') h += infoTab(ch);
   else if (S.tab === 'inv') h += invTab(ch, M);
@@ -601,7 +685,7 @@ function spellsListHtml(s, M) {
     ...list.map((e) => ({ ...e, badge: e.by === 'm' ? 'від майстра' : POOL_BADGE[e.pool] || (e.sid ? '' : 'власне') })),
   ];
   for (let lvl = 0; lvl <= 9; lvl++) {
-    const sp = rows.filter((x) => x.level === lvl).sort((a, b) => a.name.localeCompare(b.name, 'uk'));
+    const sp = rows.filter((x) => x.level === lvl).sort((a, b) => t(a.name).localeCompare(t(b.name), LOCALES[LANG]));
     if (!sp.length) continue;
     h += `<div class="lines"><h3>${lvl === 0 ? 'Замовляння' : `${lvl} коло`}</h3>${sp.map((x) => {
       const d = x.sid ? R.SPELLS[x.sid] : x;
@@ -696,7 +780,7 @@ function spellRowsHtml(ctx = pickCtx(), plan = R.spellPlan(ctx.sheet), pool = pi
     const sp = R.SPELLS[id];
     if (pool.id !== 'extra' && R.spellFitsPool(pool, sp)) return false;
     if (st.lvl !== 'all' && String(sp.level) !== String(st.lvl)) return false;
-    return !q || sp.name.toLowerCase().includes(q);
+    return !q || sp.name.toLowerCase().includes(q) || (D && t(sp.name).toLowerCase().includes(q));
   }).sort((a, b) => Number(own(R.SPELLS[b])) - Number(own(R.SPELLS[a])));
   if (!ids.length) return '<div class="ln hint">Нічого не знайдено</div>';
   return ids.map((id) => {
@@ -725,7 +809,7 @@ function infoTab(ch) {
 
 function invTab(ch, M) {
   const s = ch.sheet;
-  const items = (ch.items || []).slice().sort((a, b) => Number(b.equipped) - Number(a.equipped) || a.data.name.localeCompare(b.data.name, 'uk'));
+  const items = (ch.items || []).slice().sort((a, b) => Number(b.equipped) - Number(a.equipped) || t(a.data.name).localeCompare(t(b.data.name), LOCALES[LANG]));
   const weight = items.reduce((t, it) => t + num(it.data.weight) * it.qty, 0);
   const cap = s.abilities.str * 15;
   const attuned = items.filter((it) => it.attuned).length;
@@ -981,7 +1065,7 @@ function wizStep1() {
     ${cls ? `<small class="hint">${abbrify(`Кість хітів к${cls.hd} · рятівні: ${cls.saves.map((a) => R.ABILITY_SHORT[a]).join(', ')} · навичок: ${cls.skillCount}${cls.caster !== 'none' ? ` · заклинач (${R.ABILITY_SHORT[cls.spellAbility]})` : ''}`)}</small>` : ''}
     <label class="fld"><span>Передісторія</span><select data-bind="wiz.backgroundId" data-rerender>${opts(R.BACKGROUNDS, w.backgroundId, 'Обери передісторію')}</select></label>
     ${bg ? `<small class="hint">${bg.choose ? 'Обереш 2 навички самостійно' : `Навички: ${bg.skills.map((k) => R.SKILLS[k][0]).join(', ')}`}</small>` : ''}
-    <label class="fld"><span>Світогляд</span><select data-bind="wiz.alignment"><option value="">—</option>${R.ALIGNMENTS.map((a) => `<option ${a === w.alignment ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
+    <label class="fld"><span>Світогляд</span><select data-bind="wiz.alignment"><option value="">—</option>${R.ALIGNMENTS.map((a) => `<option value="${esc(a)}" ${a === w.alignment ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
     ${roomMaxLevel() > 1 ? `<label class="fld"><span>Початковий рівень</span><select data-bind="wiz.level" data-num data-rerender>
       ${Array.from({ length: roomMaxLevel() }, (_, i) => i + 1).map((l) => `<option value="${l}" ${l === wizLevel() ? 'selected' : ''}>${l} рівень${l > 1 ? ` (${R.XP_TABLE[l - 1]} досвіду)` : ''}</option>`).join('')}</select></label>
       <small class="hint">Майстер дозволив почати до ${roomMaxLevel()} рівня. Вибори розвитку зробиш на окремому кроці.</small>` : ''}
@@ -1140,7 +1224,7 @@ function wizStepEquip() {
   if (eq.gold) {
     return `${h}<div class="card"><p class="hint">${abbrify(`Замість спорядження класу й передісторії отримаєш ${R.startGoldText(w.classId)}. Кидок зробить сервер під час створення, результат побачить майстер. Потрібні речі купиш у грі.`)}</p></div>`;
   }
-  const letters = 'абв';
+  const letters = t('абв');
   ce.groups.forEach((g, gi) => {
     h += `<div class="card"><h3>Обери ${gi + 1}</h3>${g.map((opt, oi) => {
       const on = Number(eq.opts[gi]) === oi && eq.opts[gi] !== undefined && eq.opts[gi] !== null;
@@ -1290,7 +1374,8 @@ function catalogFiltered() {
     if (group === 'magic' && it.group !== 'Магічні предмети') return false;
     if (group === 'tool' && it.type !== 'tool') return false;
     if (group === 'treasure' && it.type !== 'treasure') return false;
-    return !ql || it.name.toLowerCase().includes(ql) || (it.desc || '').toLowerCase().includes(ql);
+    return !ql || it.name.toLowerCase().includes(ql) || (it.desc || '').toLowerCase().includes(ql)
+      || (D && (t(it.name).toLowerCase().includes(ql) || t(it.desc || '').toLowerCase().includes(ql)));
   });
 }
 function catalogListHtml() {
@@ -1334,7 +1419,7 @@ function editSheetHtml() {
       ${Object.entries((R.CLASS_DATA[e.classId] || { subclasses: {} }).subclasses).map(([id, sc]) => `<option value="${id}" ${e.subclassId === id ? 'selected' : ''}>${esc(sc.name)}</option>`).join('')}</select>
       ${e.subclass && !e.subclassId ? `<small class="hint">Зараз: ${esc(e.subclass)}</small>` : ''}</label>
     <label class="fld"><span>Передісторія</span><select data-bind="edit.backgroundId">${opts(R.BACKGROUNDS, e.backgroundId, '—')}</select></label></div>
-    <label class="fld"><span>Світогляд</span><select data-bind="edit.alignment"><option value="">—</option>${R.ALIGNMENTS.map((a) => `<option ${a === e.alignment ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
+    <label class="fld"><span>Світогляд</span><select data-bind="edit.alignment"><option value="">—</option>${R.ALIGNMENTS.map((a) => `<option value="${esc(a)}" ${a === e.alignment ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
     <div class="grid3"><label class="fld"><span>Рівень</span>${numIn('edit.level', e.level, 'min="1" max="20"')}</label>
     <label class="fld"><span>Досвід</span>${numIn('edit.xp', e.xp, 'min="0"')}</label>
     <label class="fld"><span>Дозволений рів.</span>${numIn('edit.targetLevel', e.targetLevel, 'min="1" max="20"')}</label></div></div>
@@ -1373,7 +1458,7 @@ function profEditHtml(e) {
 // ---------- Журнал ----------
 function logHtml() {
   const L = S.log;
-  const fmt = (ts) => new Date(ts * 1000).toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const fmt = (ts) => new Date(ts * 1000).toLocaleString(LOCALES[LANG], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   return `<div class="top"><h2>📜 Журнал</h2></div>
   <div class="chips"><button class="chip ${!S.logAll ? 'on' : ''}" data-act="logToggle" data-all="0">Поточна сесія</button><button class="chip ${S.logAll ? 'on' : ''}" data-act="logToggle" data-all="1">Увесь журнал</button></div>
   <div class="btns"><button class="btn" data-act="exportLog">📥 Надіслати .txt у чат</button><button class="btn" data-act="endSession">🏁 Завершити сесію</button></div>
@@ -1537,7 +1622,7 @@ const MODALS = {
       <label class="fld"><span>Категорія зброї</span><select data-bind="modal.form.cat"><option value="">—</option>${R.WEAPON_CAT_IDS.map((k) => `<option value="${k}" ${f.cat === k ? 'selected' : ''}>${R.ITEM_CATS[k]}</option>`).join('')}</select></label>` : ''}
     ${f.type === 'armor' ? `<label class="fld"><span>Тип обладунку</span><select data-onchange="armorCat"><option value="">—</option>${R.ARMOR_CAT_IDS.map((k) => `<option value="${k}" ${f.cat === k ? 'selected' : ''}>${R.ITEM_CATS[k]}</option>`).join('')}</select></label>` : ''}
     ${showWeapon ? `<div class="grid2"><label class="fld"><span>Шкода</span><input data-bind="modal.form.damage" value="${esc(f.damage || '')}" placeholder="1к8"></label>
-      <label class="fld"><span>Тип шкоди</span><select data-bind="modal.form.dmgType"><option value="">—</option>${R.DAMAGE_TYPES.map((t) => `<option ${f.dmgType === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
+      <label class="fld"><span>Тип шкоди</span><select data-bind="modal.form.dmgType"><option value="">—</option>${R.DAMAGE_TYPES.map((t) => `<option value="${esc(t)}" ${f.dmgType === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
       <label class="fld"><span>Додаткова шкода</span><input data-bind="modal.form.damage2" value="${esc(f.damage2 || '')}" placeholder="+2к6 вогнем"></label>
       <label class="fld"><span>Властивості</span><input data-bind="modal.form.props" value="${esc(f.props || '')}" placeholder="Фехтувальна, легка"></label>
       <label class="row fld"><input type="checkbox" data-bind="modal.form.ranged" ${f.ranged ? 'checked' : ''}><span>Зброя дальнього бою</span></label>` : ''}
@@ -1580,7 +1665,7 @@ const MODALS = {
     return `${hdr(m.id ? '✏️ Закляття' : '＋ Нове закляття або вміння')}
     <label class="fld"><span>Назва</span><input data-bind="modal.form.name" value="${esc(f.name)}" maxlength="80" placeholder="Напр. Магічна стріла"></label>
     <div class="grid2"><label class="fld"><span>Коло</span><select data-bind="modal.form.level" data-num>${Array.from({ length: 10 }, (_, i) => `<option value="${i}" ${num(f.level) === i ? 'selected' : ''}>${i ? `${i} коло` : 'Замовляння'}</option>`).join('')}</select></label>
-    <label class="fld"><span>Школа</span><select data-bind="modal.form.school"><option value="">—</option>${R.SPELL_SCHOOLS.map((x) => `<option ${f.school === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label></div>
+    <label class="fld"><span>Школа</span><select data-bind="modal.form.school"><option value="">—</option>${R.SPELL_SCHOOLS.map((x) => `<option value="${esc(x)}" ${f.school === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label></div>
     <div class="grid2"><label class="fld"><span>Час створення</span><input data-bind="modal.form.time" value="${esc(f.time)}" placeholder="1 дія"></label>
     <label class="fld"><span>Дистанція</span><input data-bind="modal.form.range" value="${esc(f.range)}" placeholder="120 фт"></label></div>
     <div class="grid2"><label class="fld"><span>Компоненти</span><input data-bind="modal.form.comp" value="${esc(f.comp)}" placeholder="В, С, М"></label>
@@ -1791,6 +1876,17 @@ const ACT = {
     go(role === 'master' ? 'masterHome' : 'playerHome');
   },
   switchRole: () => reset('role'),
+  setLang: async ({ v }) => {
+    const lang = normLang(v);
+    if (lang === LANG) return;
+    tapFx();
+    busy(true);
+    try { await applyLang(lang); } catch (e) { toast('Немає зв’язку із сервером. Перевір інтернет.', true); return; } finally { busy(false); }
+    lsSet(LS_LANG, LANG);
+    if (S.me && S.me.user) S.me.user.lang = LANG;
+    render();
+    api('setLang', { lang: LANG }).catch(() => {});
+  },
   toHome: () => { const home = isMaster() ? 'masterHome' : 'playerHome'; S.room = null; S.roomId = null; reset('role', home); loadMe(true); },
 
   createRoom: async () => {
@@ -1826,7 +1922,7 @@ const ACT = {
   abbr: ({ k }, el) => {
     const dice = diceInfo(k);
     const [title, body] = dice || ABBR[k] || [k, ''];
-    showTip(el, `${title}${dice || title === k ? '' : ` (${k})`}`, abbrify(body));
+    showTip(el, `${t(title)}${dice || title === k ? '' : ` (${el.textContent.trim() || abLoc(k)})`}`, abbrify(body));
   },
   skillInfo: ({ k }, el) => {
     const ch = currentChar();
@@ -1837,9 +1933,9 @@ const ACT = {
       const p = (s.skills && s.skills[k]) || 0;
       const parts = [`${R.ABILITY_SHORT[a]} ${fm(R.mod(s.abilities[a]))}`];
       if (p) parts.push(`майстерність ${fm(p * R.sheetProf(s))}${p === 2 ? ' (експертиза ×2)' : ''}`);
-      body += `<br><br><b>Бонус: ${abbrify(parts.join(' + '))} = ${fm(R.skillValue(s, k))}</b>${p ? '' : '<br><small class="hint">Без володіння</small>'}`;
+      body += `<br><br><b>Бонус: ${parts.map(abbrify).join(' + ')} = ${fm(R.skillValue(s, k))}</b>${p ? '' : '<br><small class="hint">Без володіння</small>'}`;
     }
-    showTip(el, `${name} (${R.ABILITY_NAMES[a]})`, body);
+    showTip(el, `${t(name)} (${t(R.ABILITY_NAMES[a])})`, body);
   },
   tipClose: () => hideTip(),
   openExt: ({ url }) => { if (tg && tg.openLink) tg.openLink(url); else window.open(url, '_blank'); },
@@ -1855,7 +1951,7 @@ const ACT = {
   shareInvite: () => {
     const r = S.room.room;
     const link = inviteLink(r.id);
-    const text = `Приєднуйся до гри «${r.name}» у DnD Companion! Код кімнати: ${r.id}`;
+    const text = t(`Приєднуйся до гри «${r.name}» у DnD Companion! Код кімнати: ${r.id}`);
     const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
     if (tg && tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
   },
@@ -2458,7 +2554,8 @@ async function loadLog() {
 // ================= Плашка-підказка для скорочень =================
 const $tip = document.getElementById('tip');
 function showTip(el, title, html) {
-  $tip.innerHTML = `<button class="tip-x" data-act="tipClose" aria-label="Закрити">✕</button><b class="tip-t">${esc(title)}</b><div class="tip-b">${html}</div>`;
+  $tip.innerHTML = `<button class="tip-x" data-act="tipClose" aria-label="Закрити">✕</button><b class="tip-t" data-notr>${esc(title)}</b><div class="tip-b">${html}</div>`;
+  trTree($tip);
   $tip.hidden = false;
   const r = el.getBoundingClientRect();
   const w = Math.min(320, window.innerWidth - 16);
@@ -2539,7 +2636,12 @@ document.addEventListener('visibilitychange', () => {
 
 // ================= Старт =================
 async function boot() {
-  if (!tg || !tg.initData) { reset('noTelegram'); return; }
+  const saved = lsGet(LS_LANG);
+  if (!tg || !tg.initData) {
+    await applyLang(saved || langFromTg(navigator.language)).catch(() => {});
+    reset('noTelegram');
+    return;
+  }
   try {
     tg.ready();
     tg.expand();
@@ -2548,13 +2650,22 @@ async function boot() {
     if (tg.isVersionAtLeast && tg.isVersionAtLeast('7.7') && tg.disableVerticalSwipes) tg.disableVerticalSwipes();
   } catch (e) { /* старі клієнти */ }
   reset('loading');
+  // словник збереженої мови вантажимо паралельно з даними користувача
+  const early = saved && saved !== LANG ? applyLang(saved).catch(() => {}) : null;
   try {
     S.me = await api('me');
   } catch (e) {
+    await early;
     S.bootError = e.message;
     reset('error');
     return;
   }
+  await early;
+  // мова з сервера (спільна для всіх пристроїв і сповіщень бота), інакше збережена тут
+  const want = normLang(S.me.user.lang || saved || 'uk');
+  if (want !== LANG) await applyLang(want).catch(() => {});
+  lsSet(LS_LANG, LANG);
+  if (S.me.user.lang !== LANG) { S.me.user.lang = LANG; api('setLang', { lang: LANG }).catch(() => {}); }
   const qs = new URLSearchParams(location.search);
   const raw = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || qs.get('room') || '';
   const invite = raw.toUpperCase().replace(/^(JOIN_|ROOM_)/, '').replace(/[^A-Z0-9]/g, '');
