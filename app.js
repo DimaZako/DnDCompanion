@@ -43,6 +43,7 @@ function withBase(d) {
 const ab = (k, text = k) => `<span class="abbr" data-act="abbr" data-k="${esc(k)}">${esc(text)}</span>`;
 const abbrify = (t) => esc(t).replace(ABBR_RE, (m) => `<span class="abbr" data-act="abbr" data-k="${m}">${m}</span>`);
 const compAbbr = (t) => esc(t).replace(/(?<![\p{L}])([ВСМ])(?![\p{L}])/gu, (m) => `<span class="abbr" data-act="abbr" data-k="${m}">${m}</span>`);
+const LOGO = (cls = 'logo-img') => `<picture><source srcset="img/logo.webp" type="image/webp"><img class="${cls}" src="img/logo.png" alt="DnD Companion" width="512" height="512"></picture>`;
 const SRC_LABEL = { race: 'Раса', class: 'Клас', subclass: 'Підклас', choice: 'Вибір', feat: 'Риса', custom: 'Від майстра' };
 const moneyStr = (m) => R.COINS.filter((k) => m && m[k]).map((k) => `${m[k]} ${R.COIN_NAMES[k]}`).join(', ') || '0';
 
@@ -286,7 +287,7 @@ function archiveHtml() {
 const VIEWS = {
   loading: loadingHtml,
 
-  noTelegram: () => `<div class="center-screen"><div style="font-size:64px">🐉</div><h2>DnD Companion</h2>
+  noTelegram: () => `<div class="center-screen">${LOGO('logo-img sm')}
     <p class="hint">Цей застосунок працює всередині Telegram. Відкрий бота й натисни «🎲 Грати».</p>
     <a class="btn primary" href="https://t.me/${esc(CFG.BOT_USERNAME || '')}">Відкрити @${esc(CFG.BOT_USERNAME || 'бота')}</a></div>`,
 
@@ -295,7 +296,7 @@ const VIEWS = {
 
   role: () => {
     const u = S.me.user;
-    return `<div class="hero"><div class="logo">🐉</div><h1>DnD Companion</h1><p class="hint">Привіт, ${esc(u.name)}! Обери, ким ти будеш.</p></div>
+    return `<div class="hero">${LOGO()}<p class="hint">Привіт, ${esc(u.name)}! Обери, ким ти будеш.</p></div>
     <div class="role-cards">
       <button class="role-card ${u.role === 'master' ? 'active' : ''}" data-act="pickRole" data-role="master"><span class="ic">🧙</span>
         <span><b>Майстер</b><small>Створюй кімнати, видавай предмети, керуй персонажами гравців</small></span></button>

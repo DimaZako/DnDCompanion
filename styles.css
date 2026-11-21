@@ -77,9 +77,10 @@ label.fld > span { display: block; font-size: 12px; color: var(--hint); margin-b
 #busy[hidden] { display: none; }
 
 /* Hero / ролі */
-.hero { text-align: center; padding: 34px 10px 10px; }
-.hero .logo { font-size: 64px; filter: drop-shadow(0 6px 16px rgba(201,162,39,.35)); }
-.hero h1 { margin-top: 6px; letter-spacing: .02em; }
+.hero { text-align: center; padding: 14px 10px 4px; }
+.hero .hint { margin-top: 4px; }
+.logo-img { display: block; width: min(78vw, 300px); height: auto; margin: 0 auto; filter: drop-shadow(0 10px 26px rgba(140, 70, 220, .35)); }
+.logo-img.sm { width: min(56vw, 200px); }
 .role-cards { display: grid; gap: 12px; margin-top: 24px; }
 .role-card { display: flex; align-items: center; gap: 14px; padding: 18px; border-radius: 18px; background: var(--card); text-align: left; border: 2px solid transparent; }
 .role-card .ic { font-size: 40px; }
