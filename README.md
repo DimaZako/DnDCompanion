@@ -111,4 +111,4 @@ Telegram Mini App для D&D 5e. Майстер створює кімнати, �
 
 ## Ліцензія контенту
 
-Правила й предмети взято з System Reference Document 5.1 від Wizards of the Coast за ліцензією [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Переклад і короткі описи зробив DnD Companion.
+Правила, предмети й бестіарій взято з System Reference Document 5.1 від Wizards of the Coast за ліцензією [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Переклад і короткі описи зробив DnD Companion.
