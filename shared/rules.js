@@ -178,6 +178,9 @@ export const canCastAnySpell = (sheet) => isCaster(sheet) || ['high_elf', 'tiefl
 
 export const hdAverage = (hd) => hd / 2 + 1;
 
+// Типи подій, які записує майстер (бій, дослідження…): [назва, значок]
+export const EVENT_TYPES = { combat: ['Бій', '⚔️'], explore: ['Дослідження', '🧭'], social: ['Розмова', '💬'], other: ['Інше', '✨'] };
+
 export function rollDie(sides) {
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);

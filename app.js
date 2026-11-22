@@ -451,8 +451,8 @@ const VIEWS = {
     const d = S.room;
     if (!d) return loadingHtml();
     if (d.role === 'master') return masterRoomHtml(d);
-    if (!d.character) return playerNoCharHtml(d);
-    return charHtml(d.character, false);
+    if (!d.character) return eventBanner(d) + playerNoCharHtml(d);
+    return eventBanner(d) + charHtml(d.character, false);
   },
 
   char: () => {
@@ -475,6 +475,36 @@ const VIEWS = {
   log: () => logHtml(),
 };
 
+// ---------- Події (бій, дослідження…) ----------
+const evType = (t) => R.EVENT_TYPES[t] || R.EVENT_TYPES.other;
+const evMins = (ev) => Math.max(0, Math.round((Date.now() / 1000 - ev.startedAt) / 60));
+// Плашка для гравців під час події
+function eventBanner(d) {
+  const ev = d.room && d.room.event;
+  if (!ev) return '';
+  const [tn, ti] = evType(ev.type);
+  return `<div class="ev-banner">${ti} <span>Йде подія:</span> <b>${esc(ev.name)}</b> <small>· ${tn}</small></div>`;
+}
+// Панель майстра: старт події або живі підсумки з поправками
+function eventPanel(d) {
+  const ev = d.room.event;
+  if (!ev) return '<button class="btn block ev-start" data-act="eventStartModal">⚔️ Початок події</button>';
+  const [tn, ti] = evType(ev.type);
+  const chars = ev.chars || [];
+  const rolls = ev.dmgRolls || [];
+  return `<div class="card ev-card"><div class="row"><div class="grow"><b class="ev-name">${ti} ${esc(ev.name)}</b>
+    <small class="hint">${tn} · триває ${evMins(ev)} хв</small></div><span class="ev-live">● запис</span></div>
+    <div class="ev-legend hint">⚔️ завдав шкоди · 🩸 отримав · 💚 лікування</div>
+    ${chars.length ? chars.map((x) => `<div class="ln ev-ch"><span class="grow">${esc(x.name)}</span>
+      <span class="ev-st">⚔️ ${x.dealt}</span><span class="ev-st">🩸 ${x.taken}</span><span class="ev-st">💚 ${x.heal}</span>
+      <button class="btn sm" data-act="eventAdjModal" data-id="${x.charId}" data-name="${esc(x.name)}">± шкода</button></div>`).join('')
+    : '<div class="ln hint">Персонажів у кімнаті ще немає</div>'}
+    ${rolls.length ? `<button class="link mt" data-act="eventRolls">${S.evRolls ? '▾' : '▸'} Кидки шкоди (${rolls.length})</button>
+    ${S.evRolls ? rolls.map((r) => `<div class="ln ev-roll${r.miss ? ' miss' : ''}"><span class="grow">${esc(r.name)} · <span>${esc(r.label)}</span></span><b class="v">${r.total}</b>
+      <button class="btn sm${r.miss ? '' : ' danger'}" data-act="eventMiss" data-id="${r.id}" data-miss="${r.miss ? '' : '1'}">${r.miss ? 'Влучання' : 'Промах'}</button></div>`).join('') : ''}` : ''}
+    <button class="btn primary block mt" data-act="eventEnd">🏁 Завершити подію</button></div>`;
+}
+
 // ---------- Кімната майстра ----------
 function masterRoomHtml(d) {
   const r = d.room;
@@ -483,6 +513,7 @@ function masterRoomHtml(d) {
   <div class="card"><div class="row"><div class="grow"><small>Код кімнати</small><div class="code">${esc(r.id)}</div></div>
     <button class="btn primary" data-act="invite">📨 Запросити</button></div>
     <small class="hint">Сесія ${r.session} · гравців ${players.length}/${d.maxPlayers}</small></div>
+  ${eventPanel(d)}
   <div class="btns"><button class="btn" data-act="openLog">📜 Журнал</button><button class="btn" data-act="endSession">🏁 Завершити сесію</button></div>
   <div class="btns"><button class="btn sm" data-act="restAll" data-kind="short">☕ Короткий відпочинок для всіх</button><button class="btn sm" data-act="restAll" data-kind="long">🌙 Довгий для всіх</button></div>
   <h3 class="sec">Гравці</h3>
@@ -603,6 +634,8 @@ function diceAuto(ch, purpose) {
   if (kind === 'ability' && s.abilities[key] != null) return { dice: d20, mod: R.mod(s.abilities[key]) };
   if (kind === 'save' && s.abilities[key] != null) return { dice: d20, mod: R.saveValue(s, key) };
   if (kind === 'skill' && R.SKILLS[key]) return { dice: d20, mod: R.skillValue(s, key) };
+  if (kind === 'spellattack') return { dice: d20, mod: R.sheetProf(s) + R.mod(s.abilities[R.spellAbility(s)] || 10) };
+  if (kind === 'damage' && !key) return null;
   if (kind === 'attack' || kind === 'damage') {
     const w = charWeapons(ch).find(({ it }) => String(it.id) === key);
     if (!w) return null;
@@ -614,6 +647,7 @@ function diceAuto(ch, purpose) {
   }
   return null;
 }
+const isCaster = (s) => R.sheetSlots(s).some((n) => n > 0) || ((s.spell && s.spell.spells) || []).length > 0;
 const diceExpr = (st) => DICE.filter((sd) => st.dice[sd]).map((sd) => `${st.dice[sd]}к${sd}`).join('+') + (st.mod ? fm(st.mod) : '');
 // Розклад кидка: «к20: 17 ̶4̶ · 2к6: 3, 5 · +3»
 function rollBreakdown(r) {
@@ -646,8 +680,10 @@ function diceTab(ch, dv) {
     ${og('Перевірки характеристик', R.ABILITIES.map((a) => [`ability:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.mod(s.abilities[a]))})`]))}
     ${og('Рятівні кидки', R.ABILITIES.map((a) => [`save:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.saveValue(s, a))})`]))}
     ${og('Навички', R.SKILL_IDS.map((k) => [`skill:${k}`, `${R.SKILLS[k][0]} (${fm(R.skillValue(s, k))})`]))}
-    ${og('Атаки', weapons.map(({ it, d }) => [`attack:${it.id}`, `${d.name} (${fm(R.weaponAttack(s, d).hit)})`]))}
-    ${og('Шкода', weapons.filter(({ d }) => d.damage).map(({ it, d }) => [`damage:${it.id}`, `${d.name} (${R.weaponAttack(s, d).dmg})`]))}
+    ${og('Атаки', [...weapons.map(({ it, d }) => [`attack:${it.id}`, `${d.name} (${fm(R.weaponAttack(s, d).hit)})`]),
+    ...(isCaster(s) ? [['spellattack', `Атака закляттям (${fm(diceAuto(ch, 'spellattack').mod)})`]] : [])])}
+    ${og('Шкода', [...weapons.filter(({ d }) => d.damage).map(({ it, d }) => [`damage:${it.id}`, `${d.name} (${R.weaponAttack(s, d).dmg})`]),
+    ['damage:', 'Шкода (закляття, інше)']])}
   </select>`;
   const any = DICE.some((sd) => st.dice[sd]);
   let h = `<div class="lines dice-box"><h3>🎲 Кидок</h3>
@@ -1632,6 +1668,18 @@ const MODALS = {
       : '<p class="hint mt">Зміни хітів бачить майстер у журналі. Відпочинок оголошує майстер.</p>'}`;
   },
 
+  eventStart: (m) => `${hdr('⚔️ Початок події', 'Усе, що зроблять гравці, запишеться окремо. Після завершення звіт прийде файлом у чат з ботом.')}
+    <label class="fld"><span>Назва</span><input data-bind="modal.name" maxlength="80" placeholder="Напр. Бій з гоблінами" value="${esc(m.name)}"></label>
+    <div class="fld"><span>Тип</span></div>
+    <div class="chips wrap">${Object.entries(R.EVENT_TYPES).map(([k, [n, i]]) => `<button class="chip ${m.evType === k ? 'on' : ''}" data-act="eventType" data-k="${k}">${i} ${n}</button>`).join('')}</div>
+    <button class="btn primary block mt2" data-act="eventStart">Почати подію</button>`,
+
+  eventAdj: (m) => `${hdr('± Шкода', `${esc(m.name)} — поправка до завданої шкоди за подію`)}
+    <label class="fld"><span>Скільки (можна від’ємне)</span><input type="number" inputmode="numeric" data-bind="modal.amount" value="${esc(m.amount)}"></label>
+    <div class="chips">${[1, 5, 10, -1, -5, -10].map((n) => `<button class="chip" data-act="eventAdjQuick" data-n="${n}">${n > 0 ? '+' : '−'}${Math.abs(n)}</button>`).join('')}</div>
+    <label class="fld"><span>Примітка (необов’язково)</span><input data-bind="modal.note" maxlength="80" placeholder="Напр. закляття «Вогняна куля»" value="${esc(m.note)}"></label>
+    <button class="btn primary block mt2" data-act="eventAdjSave">Зберегти</button>`,
+
   xp: (m) => {
     const ch = currentChar();
     if (!ch) return null;
@@ -2576,6 +2624,32 @@ const ACT = {
 
   // --- Майстер: досвід, рівень, редактор ---
   xpModal: () => openModal({ type: 'xp', amount: '' }),
+  // події
+  eventStartModal: () => openModal({ type: 'eventStart', name: '', evType: 'combat' }),
+  eventType: ({ k }) => { S.modal.evType = k; renderModal(); },
+  eventStart: async () => {
+    const m = S.modal;
+    const r = await reloadAfter(() => api('startEvent', { roomId: roomId(), name: m.name, type: m.evType }), '⚔️ Подію розпочато — дії гравців записуються');
+    if (r) closeModal();
+  },
+  eventEnd: async () => {
+    const ev = S.room && S.room.room.event;
+    if (!ev) return;
+    if (!(await confirmBox(`Завершити подію «${ev.name}»? Звіт прийде файлом у чат з ботом.`))) return;
+    S.evRolls = false;
+    await reloadAfter(() => api('endEvent', { roomId: roomId() }), '📊 Звіт події надіслано в чат');
+  },
+  eventRolls: () => { S.evRolls = !S.evRolls; render(); },
+  eventMiss: ({ id, miss }) => reloadAfter(() => api('eventDamage', { roomId: roomId(), rollId: Number(id), miss: !!miss })),
+  eventAdjModal: ({ id, name }) => openModal({ type: 'eventAdj', charId: Number(id), name, amount: '', note: '' }),
+  eventAdjQuick: ({ n }) => { S.modal.amount = String(num(S.modal.amount) + Number(n)); renderModal(); },
+  eventAdjSave: async () => {
+    const m = S.modal;
+    const n = Math.trunc(num(m.amount));
+    if (!n) { toast('Вкажи кількість', true); return; }
+    const r = await reloadAfter(() => api('eventDamage', { roomId: roomId(), charId: m.charId, delta: n, note: m.note }), 'Збережено');
+    if (r) closeModal();
+  },
   xpQuick: ({ n }) => { S.modal.amount = String(num(S.modal.amount) + Number(n)); renderModal(); },
   xpSave: async () => {
     const ch = currentChar();
