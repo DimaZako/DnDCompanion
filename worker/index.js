@@ -149,6 +149,8 @@ function ensureSchema(db) {
       // бій: номер раунду (0 — збір ініціативи) і чий хід
       .then(() => db.prepare('ALTER TABLE events ADD COLUMN round INTEGER NOT NULL DEFAULT 0').run().catch(() => {}))
       .then(() => db.prepare('ALTER TABLE events ADD COLUMN turn_id INTEGER').run().catch(() => {}))
+      // хід персонажа в бою: витрачені дія/бонусна дія, атаки, що лишились, кидок на рішенні майстра, очікуваний кидок шкоди
+      .then(() => db.prepare('ALTER TABLE combatants ADD COLUMN turn TEXT').run().catch(() => {}))
       // подію, що «перетекла» в іншу, позначаємо: її записи вже в тій події
       .then(() => db.prepare('ALTER TABLE events ADD COLUMN merged_into INTEGER').run().catch(() => {}))
       .catch((e) => { schemaReady = null; throw e; });
@@ -852,6 +854,7 @@ const ROLL_GROUPS = ['attack', 'skill', 'ability', 'save', 'init', 'free'];
 const HIT_KINDS = ['attack', 'spellattack', 'damage'];
 async function setRollMark(c, room, r, m) {
   await run(c.db, 'UPDATE dice_rolls SET miss = ? WHERE id = ?', m, r.id);
+  await resolvePendingRoll(c, r, m);
   const evs = r.event_id ? await activeEvents(c, room) : [];
   if (r.event_id && evs.some((e) => e.id === r.event_id)) {
     // у хроніку події (запис прив'язаний до кидка — зникне разом із ним)
@@ -1040,6 +1043,75 @@ async function turnStartEffects(c, room, charId) {
   }
 }
 const cbName = (r) => (r.num ? `${r.name} ${r.num}` : r.name);
+// стан ходу: action/bonus — витрачено, attacks — ще атак у поточній дії «Атака»,
+// pending — дія, що чекає кидка й рішення майстра, dmg — влучили, гравець кидає шкоду, last — чим закінчилась остання
+const turnOf = (r) => ({ action: 0, bonus: 0, attacks: 0, pending: null, dmg: null, last: null, ...(r.turn ? JSON.parse(r.turn) : {}) });
+const noPrev = (p) => { if (!p) return null; const { prev, ...x } = p; return x; };
+const turnPublic = (t) => ({ action: t.action, bonus: t.bonus, attacks: t.attacks, pending: noPrev(t.pending), dmg: noPrev(t.dmg), last: noPrev(t.last) });
+const saveTurn = (c, id, t) => run(c.db, 'UPDATE combatants SET turn = ? WHERE id = ?', JSON.stringify(t), id);
+// учасник бою, чий зараз хід, якщо це персонаж ch
+async function myTurnRow(c, room, ch) {
+  const evId = await charEventId(c, ch.id);
+  const ev = evId && (await first(c.db, 'SELECT * FROM events WHERE id = ? AND room_id = ? AND ended_at IS NULL', evId, room.id));
+  const cur = ev && ev.round && ev.turn_id ? await first(c.db, 'SELECT * FROM combatants WHERE id = ? AND event_id = ?', ev.turn_id, ev.id) : null;
+  return cur && cur.char_id === ch.id ? { ev, cur } : null;
+}
+// витрата дії / бонусної дії / атаки з дії «Атака»
+function spendTurn(t, cost, apa, isAttack) {
+  if (isAttack && cost !== 'bonus' && t.attacks > 0) { t.attacks -= 1; return; }
+  if (cost === 'free') return;
+  if (cost === 'bonus') {
+    if (t.bonus) fail('Бонусну дію вже використано');
+    t.bonus = 1;
+    return;
+  }
+  if (t.action) fail(isAttack ? 'Атак у цій дії не лишилось' : 'Дію вже використано');
+  t.action = 1;
+  if (isAttack) t.attacks = Math.max(0, apa - 1);
+}
+// рішення майстра по кидку, що чекав: попадання → кидок шкоди, промах чи перевірка → назад до меню дій
+// учасник бою, у ході якого записано цей кидок
+async function turnRowOfRoll(c, r) {
+  const rows = await all(c.db, 'SELECT * FROM combatants WHERE char_id = ? AND turn IS NOT NULL ORDER BY id DESC LIMIT 5', r.char_id);
+  return rows.find((x) => { const t = turnOf(x); return [t.pending, t.dmg, t.last].some((p) => p && p.rollId === r.id); });
+}
+// майстер видалив кидок, що чекав рішення: дія знову чекає кидка
+async function forgetPendingRoll(c, r) {
+  const row = await turnRowOfRoll(c, r);
+  if (!row) return;
+  const t = turnOf(row);
+  const p = (t.pending && t.pending.rollId === r.id && t.pending) || (t.dmg && t.dmg.rollId === r.id && t.dmg);
+  if (!p) return;
+  const { rollId, total, crit, label, ...rest } = p;
+  t.pending = rest;
+  t.dmg = null;
+  delete t.pending.crit;
+  await saveTurn(c, row.id, t);
+}
+async function resolvePendingRoll(c, r, m) {
+  const row = await turnRowOfRoll(c, r);
+  if (!row) return;
+  const t = turnOf(row);
+  if (t.pending && t.pending.rollId === r.id) {
+    if (!m) return;
+    const p = t.pending;
+    t.pending = null;
+    if (m === 2 && (p.kind === 'attack' || p.kind === 'spellattack')) t.dmg = { ...p, crit: p.crit === 20 };
+    else t.last = { ...p, result: m };
+  } else if (t.dmg && t.dmg.rollId === r.id) {
+    // передумав: промах або зняв позначку
+    const p = t.dmg;
+    t.dmg = null;
+    if (m === 1) t.last = { ...p, result: 1 }; else if (!m) t.pending = p;
+  } else if (t.last && t.last.rollId === r.id && t.last.dmgTotal == null && !t.pending && !t.dmg) {
+    const p = { ...t.last };
+    delete p.result;
+    t.last = null;
+    if (m === 2 && (p.kind === 'attack' || p.kind === 'spellattack')) t.dmg = { ...p, crit: p.crit === 20 };
+    else if (m) t.last = { ...p, result: m }; else t.pending = p;
+  } else return;
+  await saveTurn(c, row.id, t);
+}
 // перехід ходу: dir 1 — далі (новий раунд після останнього), −1 — назад; skipId — той, кого зараз прибирають
 async function advanceTurn(c, room, ev, dir, skipId) {
   const order = combatOrder(await combatRows(c, ev.id)).filter((r) => r.init != null && r.id !== skipId && !isDown(r));
@@ -1061,6 +1133,7 @@ async function advanceTurn(c, room, ev, dir, skipId) {
   }
   if (!next) next = order[0];
   await run(c.db, 'UPDATE events SET turn_id = ?, round = ? WHERE id = ?', next.id, round, ev.id);
+  if (dir > 0) await run(c.db, 'UPDATE combatants SET turn = NULL WHERE id = ?', next.id);
   const newRound = round !== ev.round;
   ev.turn_id = next.id;
   ev.round = round;
@@ -1079,7 +1152,9 @@ async function combatView(c, ev, forMaster) {
   const list = rows.map((r) => {
     if (r.char_id) {
       const p = pcs.find((x) => x.id === r.char_id) || {};
-      return { id: r.id, kind: 'pc', charId: r.char_id, name: r.name, init: r.init, initMod: r.init_mod, hp: p.hp, hpMax: p.hpMax, classId: p.cls || '' };
+      const t = turnOf(r);
+      return { id: r.id, kind: 'pc', charId: r.char_id, name: r.name, init: r.init, initMod: r.init_mod, hp: p.hp, hpMax: p.hpMax, classId: p.cls || '',
+        turn: turnPublic(t) };
     }
     const base = { id: r.id, kind: 'npc', mon: r.mon, name: r.name, num: r.num, init: r.init, state: MON_STATE(r), icon: r.data ? JSON.parse(r.data).icon || null : null };
     if (!forMaster) return base;
@@ -1621,9 +1696,21 @@ const OPS = {
     return { ok: true };
   },
   // ХП ворога: delta (−шкода / +лікування) або точне значення
-  async enemyHp(c, { roomId, id, delta, hp }) {
+  async enemyHp(c, { roomId, id, delta, hp, fromRoll }) {
     const { room, ev, r } = await combatantOf(c, roomId, id);
     if (r.char_id) fail('ХП персонажа змінюються на його листі');
+    // шкода з кидка гравця — позначаємо, що вже знята (кнопка зникає)
+    if (fromRoll) {
+      const rid = int(fromRoll, 0, 1e12, 0);
+      for (const x of await all(c.db, 'SELECT * FROM combatants WHERE event_id = ? AND turn IS NOT NULL', ev.id)) {
+        const t = turnOf(x);
+        if (t.last && t.last.dmgRollId === rid) {
+          if (t.last.applied) fail('Цю шкоду вже знято');
+          t.last.applied = 1;
+          await saveTurn(c, x.id, t);
+        }
+      }
+    }
     const nv = hp != null ? int(hp, 0, r.hp_max, r.hp) : Math.max(0, Math.min(r.hp_max, r.hp + int(delta, -99999, 99999, 0)));
     if (nv === r.hp) return { hp: nv };
     await run(c.db, 'UPDATE combatants SET hp = ? WHERE id = ?', nv, r.id);
@@ -1677,22 +1764,39 @@ const OPS = {
     const nx = await advanceTurn(c, room, ev, 1);
     return { turnId: nx && nx.id };
   },
-  // Дія гравця в бою — запис у хроніку (атака, закляття з витратою комірки, стандартна дія, уміння класу)
-  async combatAction(c, { charId, kind, itemId, target, spell, slot, act, resId }) {
+  // Дія гравця у свій хід: витрачає дію / бонусну дію / атаку; атака й перевірка чекають кидка й рішення майстра
+  async combatAction(c, { charId, kind, itemId, target, spell, slot, act, resId, cost, mode, key, label }) {
     const { ch, room } = await charAccess(c, charId, { owner: true });
-    const evId = await charEventId(c, ch.id);
-    if (!evId) fail('Персонаж не бере участі в бою');
+    const mine = await myTurnRow(c, room, ch);
+    if (!mine) fail('Зараз не твій хід');
+    const { ev, cur } = mine;
     const s = ch.sheet;
-    const tgt = target ? await first(c.db, 'SELECT * FROM combatants WHERE id = ? AND event_id = ?', int(target, 0, 1e12, 0), evId) : null;
+    const t = turnOf(cur);
+    const busy = t.pending || t.dmg;
+    if (busy && kind !== 'cancel') fail('Спершу заверши попередню дію');
+    const prev = { action: t.action, bonus: t.bonus, attacks: t.attacks };
+    const cst = ['action', 'bonus', 'free'].includes(cost) ? cost : null;
+    const tgt = target ? await first(c.db, 'SELECT * FROM combatants WHERE id = ? AND event_id = ?', int(target, 0, 1e12, 0), ev.id) : null;
     const to = tgt ? ` → ${cbName(tgt)}` : '';
     let text;
-    if (kind === 'attack') {
-      const it = itemId ? await first(c.db, 'SELECT data FROM items WHERE id = ? AND char_id = ?', int(itemId, 0, 1e12, 0), ch.id) : null;
-      text = `⚔️ атакує${to}: ${it ? JSON.parse(it.data).name : 'беззбройний удар'}`;
+    if (kind === 'cancel') {
+      // скасувати дію, для якої ще не кидали кубики (витрата повертається)
+      if (!t.pending || t.pending.rollId) fail('Нічого скасовувати');
+      Object.assign(t, t.pending.prev || {});
+      t.pending = null;
+      await saveTurn(c, cur.id, t);
+      await addLog(c, room, 'скасував дію', charActor(c, ch), ev.id);
+      return { ok: true };
+    } else if (kind === 'attack') {
+      spendTurn(t, cst || 'action', R.attacksPerAction(s), true);
+      const it = itemId ? await first(c.db, 'SELECT id, data FROM items WHERE id = ? AND char_id = ?', int(itemId, 0, 1e12, 0), ch.id) : null;
+      text = `⚔️ атакує${to}: ${it ? JSON.parse(it.data).name : 'беззбройний удар'}${cst === 'bonus' ? ' (бонусна дія)' : ''}`;
+      t.pending = { kind: 'attack', itemId: it ? it.id : null, target: tgt ? tgt.id : null, prev };
     } else if (kind === 'spell') {
       const sp = { name: str(spell, 80).trim() };
       if (!sp.name) fail('Закляття не знайдено');
       const lvl = int(slot, 0, 9, 0);
+      spendTurn(t, cst || 'action', 1, false);
       if (lvl > 0) {
         const max = R.sheetSlots(s);
         const used = (s.spell.slotsUsed || []).slice(0, 9);
@@ -1704,10 +1808,27 @@ const OPS = {
         await evAct(c, room, ch, 'slot', 1, { lvl });
       }
       text = `✨ творить «${sp.name}»${lvl > 0 ? ` (${lvl} коло)` : ''}${to}`;
+      if (mode === 'attack') t.pending = { kind: 'spellattack', spell: sp.name, slot: lvl, target: tgt ? tgt.id : null, prev };
+    } else if (kind === 'check') {
+      const k = str(key, 40);
+      if (!/^(skill|ability|save):[a-z_]+$/.test(k)) fail('Невідома перевірка');
+      spendTurn(t, cst || 'action', 1, false);
+      text = `🎲 перевірка: ${str(label, 60) || k}${to}`;
+      t.pending = { kind: 'check', key: k, target: tgt ? tgt.id : null, prev };
+    } else if (kind === 'item') {
+      const it = await first(c.db, 'SELECT id, data FROM items WHERE id = ? AND char_id = ?', int(itemId, 0, 1e12, 0), ch.id);
+      if (!it) fail('Предмет не знайдено');
+      spendTurn(t, cst || 'action', 1, false);
+      await OPS.useItem(c, { itemId: it.id, qty: 1 });
+      await saveTurn(c, cur.id, t);
+      return { ok: true, turn: turnPublic(t) };
     } else if (kind === 'feature') {
       const r = R.sheetResources(s).find((x) => x.id === resId);
       if (!r) fail('Невідомий ресурс');
       if (r.used >= r.max) fail(`«${r.name}» вже витрачено`);
+      // «Сплеск дій» не коштує дії й повертає її; інші вміння — бонусною дією
+      spendTurn(t, cst || (r.id === 'actionSurge' ? 'free' : 'bonus'), 1, false);
+      if (r.id === 'actionSurge') { t.action = 0; t.attacks = 0; }
       s.resUsed = { ...(s.resUsed || {}), [r.id]: r.used + 1 };
       await saveSheet(c, ch);
       await evAct(c, room, ch, 'res', 1, { name: r.name });
@@ -1715,11 +1836,13 @@ const OPS = {
     } else {
       const ACTS = { dash: '🏃 Ривок', dodge: '🛡️ Ухилення', disengage: '↩️ Відхід', help: '🤝 Допомога', hide: '🫥 Сховатися', ready: '⏳ Підготовка', search: '🔎 Пошук', move: '👣 Переміщення' };
       if (!ACTS[act]) fail('Невідома дія');
+      spendTurn(t, cst || (act === 'move' ? 'free' : 'action'), 1, false);
       text = `${ACTS[act]}${to}`;
     }
+    await saveTurn(c, cur.id, t);
     await evAct(c, room, ch, 'act', 1, { text });
-    await addLog(c, room, text, charActor(c, ch), evId);
-    return { ok: true };
+    await addLog(c, room, text, charActor(c, ch), ev.id);
+    return { ok: true, turn: turnPublic(t) };
   },
 
   // ---------- Події майстра (можуть іти паралельно; персонаж — в одній події) ----------
@@ -1803,17 +1926,20 @@ const OPS = {
     const s = ch.sheet;
     const counts = DICE_SIDES.map((sd) => [sd, int(dice && dice[sd], 0, 20, 0)]).filter(([, n]) => n > 0);
     const totalDice = counts.reduce((a, [, n]) => a + n, 0);
-    if (!totalDice) fail('Обери хоча б один кубик');
-    if (totalDice > 40) fail('Забагато кубиків (максимум 40)');
     const m = int(mod, -50, 50, 0);
+    // шкода без кубиків — лише для фіксованої (беззбройний удар: 1 + СИЛ)
+    if (!totalDice && !(kind === 'damage' && m > 0)) fail('Обери хоча б один кубик');
+    if (totalDice > 40) fail('Забагато кубиків (максимум 40)');
     const adv = mode === 'adv' || mode === 'dis' ? mode : '';
     // що саме кидаємо — підпис для історії й журналу
     let label = 'Довільний кидок';
     if (kind === 'init') label = 'Ініціатива';
     else if ((kind === 'ability' || kind === 'save') && R.ABILITY_NAMES[key]) label = `${kind === 'save' ? 'Рятівний кидок' : 'Перевірка'}: ${R.ABILITY_NAMES[key]}`;
     else if (kind === 'skill' && R.SKILLS[key]) label = R.SKILLS[key][0];
-    else if (kind === 'spellattack') label = 'Атака закляттям';
+    else if (kind === 'spellattack') label = str(key, 60).trim() ? `Атака закляттям (${str(key, 60).trim()})` : 'Атака закляттям';
     else if (kind === 'damage' && (key == null || key === '')) label = 'Шкода';
+    else if ((kind === 'attack' || kind === 'damage') && String(key) === '0') label = `${kind === 'attack' ? 'Атака' : 'Шкода'}: Беззбройний удар`;
+    else if (kind === 'damage' && !/^\d+$/.test(String(key))) label = `Шкода (${str(key, 60).trim()})`;
     else if (kind === 'attack' || kind === 'damage') {
       const it = await first(c.db, 'SELECT data FROM items WHERE id = ? AND char_id = ?', int(key, 0, 1e12, 0), ch.id);
       if (!it) fail('Предмет не знайдено (можливо, його вже змінили). Онови екран.');
@@ -1847,6 +1973,22 @@ const OPS = {
     }).join(' + ') + (m ? ` ${m > 0 ? '+' : '−'} ${Math.abs(m)}` : '');
     const critTxt = crit === 20 ? ' · природна 20!' : crit === 1 ? ' · природна 1' : '';
     await addLog(c, room, `🎲 ${label}: ${expr} = ${total}${critTxt}`, charActor(c, ch), undefined, rollId);
+    // хід у бою: кидок атаки / перевірки йде на рішення майстра; кидок шкоди після влучання завершує дію
+    const mine = await myTurnRow(c, room, ch);
+    if (mine) {
+      const t = turnOf(mine.cur);
+      const atk = ['attack', 'spellattack'].includes(kind);
+      if (t.pending && !t.pending.rollId && ((atk && ['attack', 'spellattack'].includes(t.pending.kind)) || (t.pending.kind === 'check' && ['skill', 'ability', 'save'].includes(kind)))) {
+        t.pending = { ...t.pending, rollId, total, crit, label };
+        await saveTurn(c, mine.cur.id, t);
+      } else if (t.dmg && kind === 'damage') {
+        const tg = t.dmg.target ? await first(c.db, 'SELECT * FROM combatants WHERE id = ?', t.dmg.target) : null;
+        t.last = { ...t.dmg, dmgTotal: total, dmgRollId: rollId };
+        t.dmg = null;
+        await saveTurn(c, mine.cur.id, t);
+        await addLog(c, room, `🎯 шкода${tg ? ` по ${cbName(tg)}` : ''}: ${total}`, charActor(c, ch), mine.ev.id);
+      }
+    }
     // кидок ініціативи учасника бою, який ще не кидав, — стає його ініціативою
     if (kind === 'init') {
       const evId = await charEventId(c, ch.id);
@@ -1867,8 +2009,9 @@ const OPS = {
   // Видалити кидок: зникає з історії гравця, стрічки, журналу, підсумків і звіту події (без сповіщення)
   async deleteRoll(c, { roomId, rollId }) {
     const room = await requireMaster(c, roomId);
-    const r = await first(c.db, 'SELECT id FROM dice_rolls WHERE id = ? AND room_id = ?', int(rollId, 0, 1e12, 0), room.id);
+    const r = await first(c.db, 'SELECT id, char_id FROM dice_rolls WHERE id = ? AND room_id = ?', int(rollId, 0, 1e12, 0), room.id);
     if (!r) fail('Кидок не знайдено');
+    await forgetPendingRoll(c, r);
     await c.db.batch([
       q(c.db, 'DELETE FROM dice_rolls WHERE id = ?', r.id),
       q(c.db, 'DELETE FROM logs WHERE room_id = ? AND roll_id = ?', room.id, r.id),

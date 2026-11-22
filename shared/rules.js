@@ -254,6 +254,16 @@ export const EFFECTS = {
     desc: 'Швидкість польоту 60 футів. Якщо ефект закінчується в повітрі — падає. Концентрація, до 10 хвилин.' },
 };
 export const EFFECT_GROUPS = [['cond', 'Стани'], ['spell', 'Закляття та вміння']];
+// Скільки атак дає дія «Атака» (Додаткова атака: 2, у воїна — до 4)
+export function attacksPerAction(sheet) {
+  let n = 1;
+  for (const f of sheet.features || []) {
+    if (!/^Додаткова атака/.test(f.name || '')) continue;
+    const m = /\((\d+) атак/.exec(f.name);
+    n = Math.max(n, m ? Number(m[1]) : 2);
+  }
+  return n;
+}
 // Вплив активних ефектів на кидок (purpose — як у вкладці кидків: attack:…, save:dex, skill:stealth, init…)
 export function effectRoll(effects, purpose) {
   const [kind, key] = String(purpose || '').split(':');

@@ -558,3 +558,27 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .cb-item { padding: 8px 2px; border-bottom: 1px solid color-mix(in srgb, var(--hint) 18%, transparent); }
 .cb-ctl .btn:not(.grow) { flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
 .cb-nm .hint { display: inline; margin-left: 4px; }
+/* хід у бою: витрати, крок «кинь → майстер вирішує → шкода» */
+.cb-ecos { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cb-eco { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: color-mix(in srgb, #2fbf4a 16%, var(--soft)); color: var(--text); white-space: nowrap; }
+.cb-eco.off { background: var(--soft); color: var(--hint); text-decoration: line-through; }
+.cb-eco.atk { background: color-mix(in srgb, var(--accent) 22%, var(--soft)); }
+.cb-last { margin-top: 8px; font-size: 13px; }
+.cb-res.ok { color: #2fbf4a; }
+.cb-res.fail { color: var(--danger); }
+.cb-res b { color: var(--text); }
+.cb-spent { margin-top: 8px; }
+.cb-step { border: 1.5px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.cb-step.hit { border-color: #2fbf4a; background: color-mix(in srgb, #2fbf4a 10%, var(--card)); }
+.cb-step.wait { border-color: color-mix(in srgb, var(--hint) 45%, transparent); }
+.cb-step .row { align-items: center; gap: 8px; }
+.cb-step p { margin: 6px 0 0; }
+.cb-back { flex: none; white-space: nowrap; }
+.cb-costs .chip.disabled { opacity: .4; pointer-events: none; }
+.cb-mstep { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 2px 0 4px 46px; padding: 6px 8px; border-radius: 9px; background: var(--card); font-size: 13px; }
+.cb-mstep.ask { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.cb-mstep .grow { flex: 1 1 140px; min-width: 0; }
+.cb-mstep .ev-marks { flex: none; }
+.cb-mstep .ev-marks.wide { flex: 1 1 100%; }
+.cb-mstep .btn { flex: none; }
+.cb-meco { flex: 1 1 100%; font-size: 11px; color: var(--hint); white-space: nowrap; }

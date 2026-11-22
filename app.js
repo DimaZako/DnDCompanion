@@ -248,6 +248,7 @@ async function loadRoom(silent) {
     if (S.roomId !== roomId) return;
     const changed = JSON.stringify(d) !== JSON.stringify(S.room);
     S.room = d;
+    cbAutoStep(d);
     if (!silent || changed) refreshScreen();
   } catch (e) {
     if (!silent) toast(e.message, true);
@@ -532,6 +533,134 @@ function cbSpells(ch) {
     ...(s.spell.spells || []).filter((x) => x.level === 0 || !plan.prep || x.prepared || prepCaster).map((x) => ({ name: x.name, level: x.level })),
   ].sort((a, b) => a.level - b.level || t(a.name).localeCompare(t(b.name), LOCALES[LANG]));
 }
+// ---- хід гравця в бою: витрати дії / бонусної дії, кидок → рішення майстра → шкода ----
+const TURN0 = { action: 0, bonus: 0, attacks: 0, pending: null, dmg: null, last: null };
+function myCombat(d = S.room) {
+  const ev = d && d.room && d.room.event;
+  const cb = ev && ev.combat;
+  const ch = d && d.character;
+  if (!cb || !ch) return null;
+  const me = cb.list.find((x) => x.charId === ch.id);
+  const cur = cb.list.find((x) => x.id === cb.turnId);
+  const mine = !!(cb.round && me && cur && cur.id === me.id);
+  return { ev, cb, ch, me, cur, mine, t: (me && me.turn) || TURN0 };
+}
+const cbTarget = (cb, id) => (id ? cb.list.find((x) => x.id === id) : null);
+const cbTo = (cb, id) => { const x = cbTarget(cb, id); return x ? ` → <span data-notr>${esc(cbLabel(x))}</span>` : ''; };
+const ROLL_ASK = { attack: 'Кинь атаку', spellattack: 'Кинь атаку закляттям', check: 'Кинь перевірку' };
+// закляття з довідника за назвою: час творення, опис (для витрати, виду кидка й кубиків шкоди)
+let spellByName = null;
+function spellInfo(name) {
+  if (!spellByName) spellByName = new Map(Object.values(R.SPELLS).map((x) => [x.name, x]));
+  return spellByName.get(name) || null;
+}
+const spellCost = (sp) => (!sp ? 'action' : /бонусн/.test(sp.time) ? 'bonus' : /реакц/.test(sp.time) ? 'free' : 'action');
+const spellMode = (sp) => (!sp ? 'none' : /атак\S* закляттям/i.test(sp.desc) ? 'attack' : /рятівн/i.test(sp.desc) ? 'save' : 'none');
+// кубики шкоди закляття з опису: замовляння ростуть із рівнем, вищі кола додають кубики
+function spellDamage(sp, slot, lvl) {
+  const m = sp && /(\d+)к(\d+)/.exec(sp.desc);
+  if (!m || !DICE.includes(Number(m[2]))) return null;
+  let n = Number(m[1]);
+  if (sp.level === 0 && /5, 11 і 17/.test(sp.desc)) n *= 1 + (lvl >= 5) + (lvl >= 11) + (lvl >= 17);
+  const up = /Вищі кола: \+(\d+)к(\d+)/.exec(sp.desc);
+  if (up && slot > sp.level && up[2] === m[2]) n += Number(up[1]) * (slot - sp.level);
+  return { [m[2]]: Math.min(20, n) };
+}
+// що можна зробити зараз
+function turnCan(t) {
+  const busy = !!(t.pending || t.dmg);
+  return { busy, attack: !busy && (!t.action || t.attacks > 0 || !t.bonus), act: !busy && (!t.action || !t.bonus), spent: !!(t.action && !t.attacks && t.bonus) };
+}
+// чим платимо за дію за замовчуванням: дія, а якщо вже витрачена — бонусна
+function defaultCost(k, t, extra) {
+  if (k === 'attack') return t.attacks > 0 || !t.action ? 'action' : 'bonus';
+  if (k === 'move') return 'free';
+  const want = extra || 'action';
+  if (want === 'free') return 'free';
+  if (want === 'action' && t.action) return 'bonus';
+  if (want === 'bonus' && t.bonus && !t.action) return 'action';
+  return want;
+}
+// результат останньої дії в ході
+function lastLine(t, cb) {
+  const l = t.last;
+  if (!l) return '';
+  const to = cbTo(cb, l.target);
+  if (l.dmgTotal != null) return `<span class="cb-res ok">✓ <span>Попадання</span>${to} · <span>шкода</span> <b>${l.dmgTotal}</b></span>`;
+  if (l.kind === 'check') return `<span class="cb-res ${l.result === 2 ? 'ok' : 'fail'}">${l.result === 2 ? '✓ <span>Успіх</span>' : '✗ <span>Провал</span>'} · <span>${esc(l.label || '')}</span></span>`;
+  return `<span class="cb-res fail">✗ <span>Промах</span>${to}</span>`;
+}
+// крок, що триває: кинути → майстер вирішує → шкода
+function stepCard(t, cb, where) {
+  const p = t.dmg || t.pending;
+  if (!p) return '';
+  const to = cbTo(cb, p.target);
+  const dice = where === 'dice';
+  const cls = `card cb-step${dice ? ' cb-strip' : ''}`;
+  const back = dice ? '<button class="link cb-back" data-act="tab" data-tab="combat">⚔️ До бою</button>' : '';
+  if (t.dmg) {
+    return `<div class="${cls} hit"><div class="row"><b class="grow">🎯 <span>Попадання!</span>${to}</b>${back}</div>
+      ${t.dmg.crit ? '<p class="hint"><span class="badge gold">Критичне попадання</span> <span>кубики шкоди подвоєно</span></p>' : ''}
+      ${where === 'dice' ? '<p class="hint">Кинь шкоду — кубики вже виставлено.</p>' : '<button class="btn primary block mt2" data-act="cbGoRoll">🎲 Кинути шкоду</button>'}</div>`;
+  }
+  if (p.rollId) {
+    return `<div class="${cls} wait"><div class="row"><b class="grow">⏳ <span>Майстер вирішує</span></b>${back}</div>
+      <p class="hint"><span>${esc(p.label || '')}</span>${to}: <b>${p.total}</b>${p.crit === 20 ? ' <span class="badge gold">природна 20!</span>' : p.crit === 1 ? ' <span class="badge red">природна 1</span>' : ''}</p></div>`;
+  }
+  return `<div class="${cls}"><div class="row"><b class="grow">🎲 <span>${ROLL_ASK[p.kind] || 'Кинь кубики'}</span>${to}</b>${back}</div>
+    <div class="btns mt2">${dice ? '' : '<button class="btn primary" data-act="cbGoRoll">🎲 До кидка</button>'}<button class="btn" data-act="cbCancel">Скасувати дію</button></div></div>`;
+}
+// виставити кубики під крок бою й перейти до 🎲
+function cbPreset(ch, t) {
+  const st = diceState(ch);
+  const p = t.dmg || t.pending;
+  if (!p) return false;
+  if (t.dmg) {
+    let dice = null;
+    let mod = 0;
+    let purpose = 'damage:';
+    let spell = '';
+    if (p.kind === 'attack') {
+      purpose = `damage:${p.itemId || 0}`;
+      const a = diceAuto(ch, purpose);
+      if (a) { dice = { ...a.dice }; mod = a.mod; }
+    } else {
+      spell = p.spell || '';
+      const sp = spellInfo(spell);
+      dice = spellDamage(sp, p.slot || 0, ch.sheet.level || 1);
+      if (sp && /\dк\d+ \+ модифікатор/.test(sp.desc)) mod = R.mod(ch.sheet.abilities[R.spellAbility(ch.sheet)] || 10);
+    }
+    if (dice && p.crit) for (const k of Object.keys(dice)) dice[k] = Math.min(20, dice[k] * 2);
+    Object.assign(st, { purpose, dice: dice || {}, mod, mode: '', spell });
+  } else {
+    const purpose = p.kind === 'attack' ? `attack:${p.itemId || 0}` : p.kind === 'spellattack' ? 'spellattack' : p.key;
+    const a = diceAuto(ch, purpose);
+    Object.assign(st, { purpose, dice: a ? { ...a.dice } : { 20: 1 }, mod: a ? a.mod : 0, mode: R.effectRoll(ch.effects, purpose).mode, spell: p.spell || '' });
+  }
+  S.tab = 'dice';
+  return true;
+}
+// після оновлення кімнати: попадання → вкладка 🎲 зі шкодою; промах, перевірка чи кинута шкода → назад до вибору дії
+function cbAutoStep(d) {
+  const c = myCombat(d);
+  const t = c && c.mine ? c.t : null;
+  const sig = !t ? '' : t.dmg ? `dmg:${t.dmg.rollId}` : t.pending ? '' : t.last ? `last:${t.last.rollId || ''}:${t.last.result || ''}:${t.last.dmgTotal == null ? '' : t.last.dmgTotal}` : '';
+  const prev = S.cbSig;
+  S.cbSig = sig;
+  if (prev === undefined || !sig || sig === prev || !t) return;
+  if (t.dmg) {
+    cbPreset(c.ch, t);
+    haptic('success');
+    toast('🎯 Попадання! Кинь шкоду');
+    return;
+  }
+  const l = t.last;
+  S.tab = 'combat';
+  const more = !turnCan(t).spent;
+  if (l.dmgTotal != null) toast(more ? `🎯 Шкода ${l.dmgTotal} — обери наступну дію` : `🎯 Шкода ${l.dmgTotal} — дії витрачено`);
+  else if (l.kind === 'check') toast(l.result === 2 ? (more ? '✓ Успіх — обери наступну дію' : '✓ Успіх') : (more ? '✗ Провал — обери наступну дію' : '✗ Провал'));
+  else toast(more ? '✗ Промах — обери наступну дію' : '✗ Промах');
+}
 // Вкладка бою гравця: черговість, стан ворогів, дії у свій хід
 function combatTab(ch, dv) {
   const ev = S.room.room.event;
@@ -554,11 +683,19 @@ function combatTab(ch, dv) {
       <span class="cb-ic">${esc(cbIcon(x))}</span><span class="grow cb-nm"><span data-notr>${esc(cbLabel(x))}</span>${me && x.id === me.id ? ' <small class="hint">(ти)</small>' : ''}</span>${right}</div>`;
   }).join('')}</div>`;
   if (mine) {
+    const tn = me.turn || TURN0;
+    const can = turnCan(tn);
+    const pill = (on, label) => `<span class="cb-eco${on ? '' : ' off'}">${on ? '●' : '○'} <span>${label}</span></span>`;
+    const dis = (ok) => (ok ? '' : ' disabled');
+    h += stepCard(tn, cb, 'combat');
     h += `<div class="card cb-acts"><b class="cb-my">🎯 Твій хід — що робиш?</b>
-      <div class="cb-grid"><button class="btn" data-act="cbActModal" data-k="attack">⚔️ Атака</button><button class="btn" data-act="cbActModal" data-k="spell">✨ Закляття</button>
-      <button class="btn" data-act="cbActModal" data-k="item">🧪 Предмет</button><button class="btn" data-act="cbActModal" data-k="std">🏃 Інші дії</button></div>
-      <button class="btn primary block mt" data-act="cbEndTurn">✅ Завершити хід</button>
-      <p class="hint">Дії записуються в хроніку бою, кубики — у вкладці 🎲.</p></div>`;
+      <div class="cb-ecos">${pill(!tn.action, 'Дія')}${tn.attacks > 0 ? `<span class="cb-eco atk">⚔️ <span>Атак лишилось</span>: ${tn.attacks}</span>` : ''}${pill(!tn.bonus, 'Бонусна дія')}</div>
+      ${!can.busy && tn.last ? `<div class="cb-last">${lastLine(tn, cb)}</div>` : ''}
+      <div class="cb-grid"><button class="btn${tn.attacks > 0 ? ' primary' : ''}${dis(can.attack)}" data-act="cbActModal" data-k="attack">${tn.attacks > 0 ? '⚔️ Ще атака' : '⚔️ Атака'}</button><button class="btn${dis(can.act)}" data-act="cbActModal" data-k="spell">✨ Закляття</button>
+      <button class="btn${dis(can.act)}" data-act="cbActModal" data-k="item">🧪 Предмет</button><button class="btn${dis(!can.busy)}" data-act="cbActModal" data-k="std">🏃 Інші дії</button></div>
+      ${can.spent && !can.busy ? '<p class="hint cb-spent">Дію й бонусну дію витрачено — можна завершити хід.</p>' : ''}
+      <button class="btn${can.spent && !can.busy ? ' primary' : ''} block mt" data-act="cbEndTurn">✅ Завершити хід</button>
+      <p class="hint">Атака чи перевірка: кинь кубики → майстер позначить результат → при попаданні одразу кидок шкоди.</p></div>`;
   } else if (cb.round) h += `<p class="hint center">Зараз хід: <b data-notr>${esc(cur ? cbLabel(cur) : '—')}</b>. Дії з’являться, коли настане твоя черга.</p>`;
   else if (me && me.init != null) h += '<p class="hint center">Чекаємо, поки майстер почне бій.</p>';
   return h;
@@ -740,6 +877,26 @@ const findCb = (id) => {
   return {};
 };
 // у вікні події майстра: черговість, ХП ворогів, керування ходами
+// Під гравцем, чий хід: що він робить зараз — кидок на рішенні (✓ / ✗), очікування шкоди, кинута шкода (швидко зняти з ворога)
+function masterStep(cb, x) {
+  const tn = x.turn || TURN0;
+  const eco = `<span class="cb-meco">${tn.action ? '○' : '●'} <span>Дія</span>${tn.attacks > 0 ? ` (⚔️ ${tn.attacks})` : ''} · ${tn.bonus ? '○' : '●'} <span>Бонусна дія</span></span>`;
+  const p = tn.dmg || tn.pending;
+  let body = '';
+  if (p && p.rollId) {
+    const kind = p.kind === 'check' ? 'skill' : p.kind;
+    const mark = tn.dmg ? 2 : 0;
+    body = `<span class="grow">🎲 <span>${esc(p.label || '')}</span>${cbTo(cb, p.target)}: <b>${p.total}</b>${p.crit === 20 ? ' <span class="badge gold">20!</span>' : p.crit === 1 ? ' <span class="badge red">1</span>' : ''}
+      ${tn.dmg ? '<br><small class="hint">🎯 Кидає шкоду…</small>' : ''}</span>${markBtns({ id: p.rollId, kind, mark }, !!tn.dmg)}`;
+  } else if (p) body = `<span class="grow hint">⏳ <span>${ROLL_ASK[p.kind] ? `${p.kind === 'check' ? 'Перевірка' : 'Атака'} — чекаємо кидок` : 'Чекаємо кидок'}</span>${cbTo(cb, p.target)}</span>`;
+  else if (tn.last && tn.last.dmgTotal != null) {
+    const tg = cbTarget(cb, tn.last.target);
+    const done = !!tn.last.applied;
+    body = `<span class="grow">🗡 <span>Шкода</span>${cbTo(cb, tn.last.target)}: <b>${tn.last.dmgTotal}</b></span>
+      ${tg && tg.kind === 'npc' && tg.hp > 0 && !done ? `<button class="btn sm primary" data-act="cbDmgApply" data-id="${tg.id}" data-n="${tn.last.dmgTotal}" data-r="${tn.last.dmgRollId}">−${tn.last.dmgTotal} <span>ХП</span></button>` : done ? '<small class="hint">✓ знято</small>' : ''}`;
+  } else if (tn.last) body = `<span class="grow">${lastLine(tn, cb)}</span>${tn.last.rollId ? markBtns({ id: tn.last.rollId, kind: tn.last.kind === 'check' ? 'skill' : tn.last.kind, mark: tn.last.result }, true) : ''}`;
+  return `<div class="cb-mstep${p && p.rollId && !tn.dmg ? ' ask' : ''}">${body || '<span class="grow hint">Обирає дію…</span>'}${eco}</div>`;
+}
 function combatPanel(ev) {
   const cb = ev.combat;
   if (!cb) return '';
@@ -752,7 +909,8 @@ function combatPanel(ev) {
       <span class="cb-ic">${esc(cbIcon(x))}</span>
       <span class="grow cb-nm"${x.kind === 'npc' ? ` data-act="cbStat" data-id="${x.id}"` : ''}><span data-notr>${esc(cbLabel(x))}</span>${x.kind === 'npc' ? ` <small class="hint" data-notr>${esc(abLoc('КЗ'))} ${x.ac}</small>` : ''}</span>
       <button class="cb-hp${x.kind === 'pc' ? ' pc' : ''}" data-act="cbHpModal" data-id="${x.id}" data-notr>${x.hp}/${x.hpMax}</button>
-      ${x.kind === 'npc' ? `<button class="cb-x" data-act="cbRemove" data-id="${x.id}" aria-label="${esc(t('Прибрати з бою'))}">✕</button>` : '<span class="cb-x"></span>'}</div>`;
+      ${x.kind === 'npc' ? `<button class="cb-x" data-act="cbRemove" data-id="${x.id}" aria-label="${esc(t('Прибрати з бою'))}">✕</button>` : '<span class="cb-x"></span>'}</div>
+      ${turn && x.kind === 'pc' && cb.round ? masterStep(cb, x) : ''}`;
   }).join('');
   return `<div class="cb">
     <div class="row cb-head"><b class="grow">🎯 Ініціатива</b><span class="hint">${cb.round ? `Раунд ${cb.round}` : 'Збір ініціативи'}</span></div>
@@ -948,6 +1106,11 @@ function diceAuto(ch, purpose) {
   if (kind === 'skill' && R.SKILLS[key]) return { dice: d20, mod: R.skillValue(s, key) };
   if (kind === 'spellattack') return { dice: d20, mod: R.sheetProf(s) + R.mod(s.abilities[R.spellAbility(s)] || 10) };
   if (kind === 'damage' && !key) return null;
+  // беззбройний удар: атака — СИЛ + майстерність, шкода — 1 + СИЛ
+  if ((kind === 'attack' || kind === 'damage') && key === '0') {
+    const sm = R.mod(s.abilities.str);
+    return kind === 'attack' ? { dice: d20, mod: R.sheetProf(s) + sm } : { dice: {}, mod: Math.max(1, 1 + sm) };
+  }
   if (kind === 'attack' || kind === 'damage') {
     const w = charWeapons(ch).find(({ it }) => String(it.id) === key);
     if (!w) return null;
@@ -996,14 +1159,18 @@ function diceTab(ch, dv) {
     ${og('Рятівні кидки', R.ABILITIES.map((a) => [`save:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.saveValue(s, a))})`]))}
     ${og('Навички', R.SKILL_IDS.map((k) => [`skill:${k}`, `${R.SKILLS[k][0]} (${fm(R.skillValue(s, k))})`]))}
     ${og('Атаки', [...weapons.map(({ it, d }) => [`attack:${it.id}`, `${d.name} (${fm(R.weaponAttack(s, d).hit)})`]),
-    ...(isCaster(s) ? [['spellattack', `Атака закляттям (${fm(diceAuto(ch, 'spellattack').mod)})`]] : [])])}
+    ['attack:0', `Беззбройний удар (${fm(diceAuto(ch, 'attack:0').mod)})`],
+    ...(isCaster(s) || st.purpose === 'spellattack' ? [['spellattack', `Атака закляттям (${fm(diceAuto(ch, 'spellattack').mod)})`]] : [])])}
     ${og('Шкода', [...weapons.filter(({ d }) => d.damage).map(({ it, d }) => [`damage:${it.id}`, `${d.name} (${R.weaponAttack(s, d).dmg})`]),
-    ['damage:', 'Шкода (закляття, інше)']])}
+    ['damage:0', `Беззбройний удар (${diceAuto(ch, 'damage:0').mod})`], ['damage:', 'Шкода (закляття, інше)']])}
   </select>`;
-  const any = DICE.some((sd) => st.dice[sd]);
-  let h = `<div class="lines dice-box"><h3>🎲 Кидок</h3>
+  const any = DICE.some((sd) => st.dice[sd]) || (st.purpose.startsWith('damage:') && st.mod > 0);
+  const cbc = myCombat();
+  let h = cbc && cbc.mine ? stepCard(cbc.t, cbc.cb, 'dice') : '';
+  h += `<div class="lines dice-box"><h3>🎲 Кидок</h3>
     <label class="fld"><span>На що</span>${sel}</label>
     ${fxHints(ch, st.purpose)}
+    ${st.spell && (st.purpose === 'spellattack' || st.purpose === 'damage:') ? `<p class="hint">✨ <span data-notr>${esc(t(st.spell))}</span></p>` : ''}
     <div class="fld"><span>Кубики</span></div>
     <div class="dice-grid">${DICE.map((sd) => {
     const n = st.dice[sd] || 0;
@@ -2044,12 +2211,16 @@ const MODALS = {
     const foes = ev.combat.list.filter((x) => x.kind === 'npc' && x.state !== 'dead');
     const allies = ev.combat.list.filter((x) => x.kind === 'pc' && (!me || x.id !== me.id));
     const targets = `<div class="fld"><span>Ціль</span></div><div class="chips wrap">${chip('target', '', esc(t('без цілі')), true)}${[...foes, ...allies].map((x) => chip('target', x.id, `${esc(cbIcon(x))} ${esc(cbLabel(x))}`, true)).join('')}</div>`;
+    // чим платимо: дія / бонусна дія / без витрати
+    const tn = (me && me.turn) || TURN0;
+    const atkLeft = m.k === 'attack' && tn.attacks > 0;
+    const costs = `<div class="fld"><span>Витрата</span></div><div class="chips wrap cb-costs">${chip('cost', 'action', atkLeft ? `⚔️ ${esc(t('Атака з дії'))} (${tn.attacks})` : `● ${esc(t('Дія'))}`, true, tn.action && !atkLeft)}${chip('cost', 'bonus', `◐ ${esc(t('Бонусна дія'))}`, true, !!tn.bonus)}${chip('cost', 'free', esc(t('Без витрати')), true)}</div>`;
     if (m.k === 'attack') {
       const ws = charWeapons(ch);
-      return `${hdr('⚔️ Атака', 'Запишеться в хроніку бою')}
+      return `${hdr(atkLeft ? '⚔️ Ще атака' : '⚔️ Атака', 'Кинь атаку — майстер позначить попадання')}
       <div class="fld"><span>Чим</span></div><div class="chips wrap">${ws.map(({ it }) => chip('item', it.id, esc(it.data.name))).join('')}${chip('item', '0', esc(t('Беззбройний удар')), true)}</div>
-      ${targets}
-      <div class="btns mt2"><button class="btn" data-act="cbActSave">⚔️ Записати</button><button class="btn primary" data-act="cbActSave" data-roll="1">⚔️ Записати й кинути 🎲</button></div>`;
+      ${targets}${costs}
+      <button class="btn primary block mt2" data-act="cbActSave">⚔️ Атакувати — до кидка 🎲</button>`;
     }
     if (m.k === 'spell') {
       const list = cbSpells(ch);
@@ -2063,21 +2234,27 @@ const MODALS = {
         const free = (max[L - 1] || 0) - (used[L - 1] || 0);
         return chip('slot', L, `${L} коло · ${free}/${max[L - 1]}`, false, free <= 0);
       }).join('') || '<p class="hint">Немає комірок потрібного кола</p>'}</div>` : sp ? '<p class="hint">Замовляння — без комірки.</p>' : ''}
-      ${sp ? targets : ''}
-      <button class="btn primary block mt2${sp ? '' : ' disabled'}" data-act="cbActSave">✨ Записати</button>`;
+      ${sp ? `<div class="fld"><span>Кидок</span></div><div class="chips wrap">${chip('mode', 'attack', '🎯 Атака закляттям')}${chip('mode', 'save', '🛡️ Рятівний кидок цілі')}${chip('mode', 'none', 'Без кидка')}</div>
+      ${targets}${costs}` : ''}
+      <button class="btn primary block mt2${sp ? '' : ' disabled'}" data-act="cbActSave">${sp && m.mode === 'attack' ? '✨ Творити — до кидка 🎲' : '✨ Творити'}</button>`;
     }
     if (m.k === 'item') {
       const its = (ch.items || []).filter((it) => R.isConsumable(it.data) && it.qty > 0);
       return `${hdr('🧪 Предмет', 'Використання зменшує кількість')}
-      ${its.length ? its.map((it) => `<div class="row cb-item"><span class="grow">${esc(it.data.name)} <small class="hint">×${it.qty}</small></span><button class="btn sm primary" data-act="cbUseItem" data-id="${it.id}">Використати</button></div>`).join('')
+      ${its.length ? `${its.map((it) => `<div class="row cb-item"><span class="grow">${esc(it.data.name)} <small class="hint">×${it.qty}</small></span><button class="btn sm primary" data-act="cbUseItem" data-id="${it.id}">Використати</button></div>`).join('')}${costs}`
         : empty('🎒', 'Витратних предметів немає')}`;
     }
     const res = R.sheetResources(ch.sheet).filter((r) => r.used < r.max);
-    return `${hdr('🏃 Інші дії', 'Стандартні дії та вміння класу')}
-      <div class="chips wrap">${CB_ACTS.map(([k, n]) => chip('act', k, n)).join('')}</div>
+    const s = ch.sheet;
+    const checks = `<select data-bind="modal.check">${[['Перевірки характеристик', R.ABILITIES.map((a) => [`ability:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.mod(s.abilities[a]))})`])],
+      ['Навички', R.SKILL_IDS.map((k) => [`skill:${k}`, `${R.SKILLS[k][0]} (${fm(R.skillValue(s, k))})`])]]
+      .map(([g, xs]) => `<optgroup label="${esc(t(g))}">${xs.map(([v, l]) => `<option value="${v}"${m.check === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select>`;
+    return `${hdr('🏃 Інші дії', 'Стандартні дії, перевірки та вміння класу')}
+      <div class="chips wrap">${CB_ACTS.map(([k, n]) => chip('act', k, n)).join('')}${chip('act', 'check', '🎲 Перевірка')}</div>
+      ${m.act === 'check' ? `<label class="fld"><span>Що перевіряєш</span>${checks}</label>` : ''}
       ${res.length ? `<div class="fld"><span>Уміння класу</span></div><div class="chips wrap">${res.map((r) => chip('act', `res:${r.id}`, `🌟 ${esc(r.name)} <small>${r.max - r.used}/${r.max}</small>`)).join('')}</div>` : ''}
-      ${targets}
-      <button class="btn primary block mt2${m.act ? '' : ' disabled'}" data-act="cbActSave">Записати</button>`;
+      ${targets}${m.act ? costs : ''}
+      <button class="btn primary block mt2${m.act ? '' : ' disabled'}" data-act="cbActSave">${m.act === 'check' ? '🎲 Перевірка — до кидка' : 'Записати'}</button>`;
   },
   monView: (m) => {
     const o = monOf(m.mon, m.data);
@@ -2657,6 +2834,7 @@ const ACT = {
     if (!ch) return;
     const st = diceState(ch);
     st.purpose = value;
+    st.spell = '';
     const a = diceAuto(ch, value);
     if (a) { st.dice = { ...a.dice }; st.mod = a.mod; } else st.mod = 0;
     // перевага/перешкода — ситуативні: для нової мети скидаються, а ефекти (отруєння, лють…) ставлять їх самі
@@ -2679,8 +2857,10 @@ const ACT = {
     const ch = S.room && S.room.character;
     const st = S.dice;
     if (!ch || !st) return;
-    if (!DICE.some((sd) => st.dice[sd])) { toast('Обери хоча б один кубик', true); return; }
-    const [kind, key] = st.purpose.split(':');
+    const [kind, key0] = st.purpose.split(':');
+    if (!DICE.some((sd) => st.dice[sd]) && !(kind === 'damage' && st.mod > 0)) { toast('Обери хоча б один кубик', true); return; }
+    // назва закляття — у підпис кидка атаки закляттям і його шкоди
+    const key = st.spell && (kind === 'spellattack' || (kind === 'damage' && !key0)) ? st.spell : key0;
     const r = await run(() => api('rollDice', { charId: ch.id, kind, key, dice: st.dice, mod: st.mod, mode: st.mode }));
     if (!r) return;
     st.last = r.roll;
@@ -3317,23 +3497,36 @@ const ACT = {
     const r = await reloadAfter(() => api('rollDice', { charId: ch.id, kind: 'init', dice: { 20: 1 }, mod: dv.init, mode: R.effectRoll(ch.effects, 'init').mode }));
     if (r && r.roll) { S.tab = 'combat'; render(); toast(`🎲 ${t('Ініціатива')}: ${r.roll.total}`); }
   },
-  cbActModal: ({ k }) => openModal({ type: 'cbAct', k, item: '', target: '', spell: '', slot: '', act: '' }),
+  cbActModal: ({ k }) => {
+    const c = myCombat();
+    const tn = (c && c.t) || TURN0;
+    if (turnCan(tn).busy) { toast('Спершу заверши попередню дію', true); return; }
+    // ціль за замовчуванням — та сама, що й в останній дії
+    const last = (k === 'attack' || k === 'spell') && tn.last && tn.last.target && c.cb.list.find((x) => x.id === tn.last.target && !(x.kind === 'npc' && x.state === 'dead'));
+    openModal({ type: 'cbAct', k, item: k === 'attack' && tn.last && tn.last.kind === 'attack' ? String(tn.last.itemId || 0) : '', target: last ? String(last.id) : '', spell: '', slot: '', act: '', mode: 'none', check: 'skill:athletics', cost: defaultCost(k, tn) });
+  },
   cbActPick: ({ f, v }) => {
     const m = S.modal;
     m[f] = m[f] === v && f === 'target' ? '' : v;
+    const c = myCombat();
+    const tn = (c && c.t) || TURN0;
     if (f === 'spell') {
       const sp = cbSpells(currentChar())[Number(v)];
       const ch = currentChar();
       const max = R.sheetSlots(ch.sheet);
       const used = ch.sheet.spell.slotsUsed || [];
       m.slot = sp && sp.level > 0 ? (Array.from({ length: 9 }, (_, i) => i + 1).find((L) => L >= sp.level && (max[L - 1] || 0) - (used[L - 1] || 0) > 0) || '') : 0;
+      const info = sp && spellInfo(sp.name);
+      m.mode = spellMode(info);
+      m.cost = defaultCost('spell', tn, spellCost(info));
     }
+    if (f === 'act') m.cost = defaultCost(v === 'move' ? 'move' : 'std', tn, v === 'res:actionSurge' ? 'free' : v.startsWith('res:') ? 'bonus' : 'action');
     renderModal();
   },
-  cbActSave: async ({ roll }) => {
+  cbActSave: async () => {
     const m = S.modal;
     const ch = currentChar();
-    const p = { charId: ch.id, kind: m.k === 'std' ? 'std' : m.k, target: m.target ? Number(m.target) : undefined };
+    const p = { charId: ch.id, kind: m.k === 'std' ? 'std' : m.k, target: m.target ? Number(m.target) : undefined, cost: m.cost || undefined };
     if (m.k === 'attack') { if (m.item === '') { toast('Обери, чим атакуєш', true); return; } p.itemId = Number(m.item) || undefined; }
     if (m.k === 'spell') {
       const sp = cbSpells(ch)[Number(m.spell)];
@@ -3341,21 +3534,40 @@ const ACT = {
       if (sp.level > 0 && !m.slot) { toast('Немає вільної комірки', true); return; }
       p.spell = sp.name;
       p.slot = sp.level > 0 ? Number(m.slot) : 0;
+      p.mode = m.mode;
     }
     if (m.k === 'std') {
       if (!m.act) { toast('Обери дію', true); return; }
-      if (m.act.startsWith('res:')) { p.kind = 'feature'; p.resId = m.act.slice(4); } else p.act = m.act;
+      if (m.act.startsWith('res:')) { p.kind = 'feature'; p.resId = m.act.slice(4); } else if (m.act === 'check') {
+        p.kind = 'check';
+        p.key = m.check;
+        const [kk, kv] = m.check.split(':');
+        p.label = kk === 'skill' ? R.SKILLS[kv][0] : `Перевірка: ${R.ABILITY_NAMES[kv]}`;
+      } else p.act = m.act;
     }
     const r = await reloadAfter(() => api('combatAction', p), '📝 Записано в хроніку бою');
     if (!r) return;
     closeModal();
-    if (roll && p.itemId) { S.tab = 'dice'; ACT.dicePurpose({ value: `attack:${p.itemId}` }); }
+    // атака / перевірка чекає кидка — одразу на вкладку 🎲 з виставленими кубиками
+    if (r.turn && r.turn.pending && cbPreset(ch, r.turn)) render();
+  },
+  cbGoRoll: () => {
+    const c = myCombat();
+    if (c && c.mine && cbPreset(c.ch, c.t)) { tapFx(); render(); }
+  },
+  cbCancel: async () => {
+    const ch = currentChar();
+    if (!(await confirmBox('Скасувати дію? Витрата повернеться.'))) return;
+    const r = await reloadAfter(() => api('combatAction', { charId: ch.id, kind: 'cancel' }), 'Дію скасовано');
+    if (r) { S.tab = 'combat'; render(); }
   },
   cbUseItem: async ({ id }) => {
     const ch = currentChar();
     const it = ch && ch.items.find((x) => x.id === Number(id));
     if (!it) return;
-    const r = await reloadAfter(() => api('useItem', { itemId: it.id, qty: 1 }), `Використано: ${it.data.name}`);
+    const c = myCombat();
+    const r = await reloadAfter(() => (c && c.mine ? api('combatAction', { charId: ch.id, kind: 'item', itemId: it.id, cost: (S.modal && S.modal.cost) || undefined })
+      : api('useItem', { itemId: it.id, qty: 1 })), `Використано: ${it.data.name}`);
     if (r) closeModal();
   },
   cbEndTurn: async () => {
@@ -3412,6 +3624,9 @@ const ACT = {
   fxStdInfo: ({ k }, el) => {
     const d = R.EFFECTS[k];
     if (d) showTip(el, `${d.icon} ${t(d.name)}`, `<p style="margin:0">${esc(d.desc)}</p>`);
+  },
+  cbDmgApply: async ({ id, n, r }) => {
+    await reloadAfter(() => api('enemyHp', { roomId: roomId(), id: Number(id), delta: -Number(n), fromRoll: Number(r) }));
   },
   rollMark: ({ id, m }) => reloadAfter(() => api('markRoll', { roomId: roomId(), rollId: Number(id), mark: Number(m) })),
   rollDel: async ({ id }) => {
