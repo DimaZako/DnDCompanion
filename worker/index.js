@@ -698,10 +698,12 @@ async function archiveRows(c, onlyId) {
 // ---------- Події: підсумки й звіт ----------
 async function getEvent(c, id) { return id ? first(c.db, 'SELECT * FROM events WHERE id = ?', id) : null; }
 const evTypeName = (t) => (R.EVENT_TYPES[t] || R.EVENT_TYPES.other)[0];
-// Підсумки по персонажах: завдана/отримана шкода, атаки, кидки, комірки, ресурси, предмети
+// Підсумки по персонажах: шкода, лікування, усі кидки (навички, характеристики, рятівні, атаки…), інші дії
+// Позначка майстра для кидка (dice_rolls.miss): 0 — немає, 1 — провал/промах (шкода не рахується), 2 — успіх
+const ROLL_GROUPS = ['attack', 'skill', 'ability', 'save', 'init', 'free'];
 async function eventStats(c, ev) {
   const rolls = (await all(c.db, 'SELECT id, char_id, ts, data, miss FROM dice_rolls WHERE event_id = ? ORDER BY id', ev.id))
-    .map((r) => ({ id: r.id, charId: r.char_id, ts: r.ts, miss: !!r.miss, ...JSON.parse(r.data) }));
+    .map((r) => ({ id: r.id, charId: r.char_id, ts: r.ts, mark: r.miss || 0, ...JSON.parse(r.data) }));
   const acts = await all(c.db, 'SELECT * FROM event_acts WHERE event_id = ? ORDER BY id', ev.id);
   const ids = new Set([...rolls.map((r) => r.charId), ...acts.map((a) => a.char_id)]);
   const rows = await all(c.db, `SELECT ch.id, ch.alive, ch.sheet, u.first_name FROM characters ch LEFT JOIN users u ON u.id = ch.user_id
@@ -709,17 +711,23 @@ async function eventStats(c, ev) {
   const chars = rows.map((r) => {
     const sh = JSON.parse(r.sheet);
     return { charId: r.id, name: sh.name, player: r.first_name || '', raceId: sh.raceId, raceName: sh.raceName || '', classId: sh.classId, level: sh.level,
-      dealt: 0, dmgRolls: 0, misses: 0, adj: 0, attacks: 0, nat20: 0, nat1: 0, taken: 0, heal: 0, down: 0, deathS: 0, deathF: 0,
-      slots: {}, res: {}, items: {}, other: [] };
+      dealt: 0, dmgRolls: 0, misses: 0, adj: 0, rolls: 0, nat20: 0, nat1: 0, taken: 0, heal: 0, down: 0, deathS: 0, deathF: 0,
+      groups: Object.fromEntries(ROLL_GROUPS.map((g) => [g, {}])), slots: {}, res: {}, items: {}, acts: [] };
   });
   const byId = new Map(chars.map((x) => [x.charId, x]));
   for (const r of rolls) {
     const x = byId.get(r.charId);
     if (!x) continue;
+    x.rolls++;
     if (r.crit === 20) x.nat20++;
     if (r.crit === 1) x.nat1++;
-    if (r.kind === 'damage') { x.dmgRolls++; if (r.miss) x.misses++; else x.dealt += r.total; } else if (r.kind === 'attack' || r.kind === 'spellattack') x.attacks++;
-    else x.other.push(`${r.label} (${r.total})`);
+    if (r.kind === 'damage') { x.dmgRolls++; if (r.mark === 1) x.misses++; else x.dealt += r.total; continue; }
+    const g = r.kind === 'spellattack' ? 'attack' : ROLL_GROUPS.includes(r.kind) ? r.kind : 'free';
+    // підпис у групі: без «Атака: », «Перевірка: », «Рятівний кидок: »; довільний кидок — за кубиками
+    let name = String(r.label || '').replace(/^(Атака|Перевірка|Рятівний кидок): /, '');
+    if (g === 'free') name = (r.groups || []).map((q) => `${q.n > 1 ? q.n : ''}к${q.s}`).join('+') + (r.mod ? R.fmtMod(r.mod) : '');
+    if (g === 'init') name = 'Ініціатива';
+    (x.groups[g][name] = x.groups[g][name] || []).push(`${r.total}${r.mark === 2 ? ' ✓' : r.mark === 1 ? ' ✗' : ''}`);
   }
   for (const a of acts) {
     const x = byId.get(a.char_id);
@@ -733,8 +741,8 @@ async function eventStats(c, ev) {
     else if (a.kind === 'slot') x.slots[d.lvl] = (x.slots[d.lvl] || 0) + a.value;
     else if (a.kind === 'res') x.res[d.name] = (x.res[d.name] || 0) + a.value;
     else if (a.kind === 'item') x.items[d.name] = (x.items[d.name] || 0) + a.value;
+    else if (a.kind === 'act' && d.text) x.acts.push(d.text);
   }
-  // у підсумку — лише ті, хто щось зробив або живий у кімнаті
   return { chars, rolls };
 }
 // Текст звіту події (українською; перекладається мовою майстра)
@@ -751,19 +759,25 @@ async function buildEventTxt(c, room, ev, st) {
   out.push(L(`DnD Companion — подія «${ev.name}»`));
   out.push(L(`${evTypeName(ev.type)} · кімната «${room.name}» (код ${room.id}) · сесія ${ev.session}`));
   out.push(L(`Початок: ${fmt(ev.started_at, true)} · кінець: ${fmt(end, true)} · тривалість: ${mins} хв`));
-  out.push('', L('=== Підсумок по персонажах ==='));
+  out.push('', L('=== Підсумок по персонажах ==='), L('✓ — успіх, ✗ — провал (позначки майстра)'));
   for (const x of st.chars) {
     const race = x.raceId === 'custom' ? x.raceName : (R.RACES[x.raceId] || {}).name || '';
     const cls = (R.CLASSES[x.classId] || {}).name || '';
     out.push('', `${x.name}${x.player ? ` (${x.player})` : ''} — ${L(race)}, ${L(cls)} ${L(`${x.level} рів.`)}`);
     const lines = [];
+    const grp = (g) => Object.entries(x.groups[g]).map(([n, v]) => `${n}: ${v.join(', ')}`).join('; ');
     if (x.dealt || x.dmgRolls || x.adj) {
       const det = [`кидків шкоди: ${x.dmgRolls}`];
       if (x.misses) det.push(`промахів: ${x.misses}`);
       if (x.adj) det.push(`поправка майстра: ${R.fmtMod(x.adj)}`);
       lines.push(`Завдана шкода: ${x.dealt} (${det.join('; ')})`);
     }
-    if (x.attacks || x.nat20 || x.nat1) lines.push(`Атаки: ${x.attacks}; природних 20: ${x.nat20}; природних 1: ${x.nat1}`);
+    const GL = { attack: 'Атаки', skill: 'Перевірки навичок', ability: 'Перевірки характеристик', save: 'Рятівні кидки', init: 'Ініціатива', free: 'Довільні кидки' };
+    for (const g of ROLL_GROUPS) {
+      if (!Object.keys(x.groups[g]).length) continue;
+      lines.push(g === 'init' ? `Ініціатива: ${x.groups.init['Ініціатива'].join(', ')}` : `${GL[g]}: ${grp(g)}`);
+    }
+    if (x.nat20 || x.nat1) lines.push(`Природних 20: ${x.nat20}; природних 1: ${x.nat1}`);
     if (x.taken || x.heal) lines.push(`Отримана шкода: ${x.taken}; лікування: ${x.heal}`);
     if (x.down) lines.push(`Впав до 0 ХП: ${x.down}`);
     if (x.deathS || x.deathF) lines.push(`Рятівні від смерті: успіхів ${x.deathS}, провалів ${x.deathF}`);
@@ -773,7 +787,7 @@ async function buildEventTxt(c, room, ev, st) {
     if (rs.length) lines.push(`Ресурси: ${rs.join(', ')}`);
     const its = Object.entries(x.items).map(([n, k]) => `${n} ×${k}`);
     if (its.length) lines.push(`Предмети: ${its.join(', ')}`);
-    if (x.other.length) lines.push(`Інші кидки: ${x.other.join(', ')}`);
+    if (x.acts.length) lines.push(`Інші дії: ${x.acts.join('; ')}`);
     if (!lines.length) lines.push('без дій');
     for (const l of lines) out.push(`  ${L(l)}`);
   }
@@ -942,9 +956,9 @@ const OPS = {
       if (base.event) {
         // живі підсумки події для майстра + кидки шкоди, які можна позначити як промах
         const st = await eventStats(c, ev);
-        base.event.chars = st.chars.map((x) => ({ charId: x.charId, name: x.name, dealt: x.dealt, taken: x.taken, heal: x.heal, attacks: x.attacks, misses: x.misses, adj: x.adj }));
-        base.event.dmgRolls = st.rolls.filter((r) => r.kind === 'damage').slice(-30).reverse()
-          .map((r) => ({ id: r.id, charId: r.charId, label: r.label, total: r.total, miss: r.miss, ts: r.ts, name: (st.chars.find((x) => x.charId === r.charId) || {}).name || '' }));
+        base.event.chars = st.chars.map((x) => ({ charId: x.charId, name: x.name, dealt: x.dealt, taken: x.taken, heal: x.heal, rolls: x.rolls, misses: x.misses, adj: x.adj, acts: x.acts.length }));
+        base.event.rolls = st.rolls.slice(-40).reverse()
+          .map((r) => ({ id: r.id, charId: r.charId, kind: r.kind, label: r.label, total: r.total, mark: r.mark, crit: r.crit, ts: r.ts, name: (st.chars.find((x) => x.charId === r.charId) || {}).name || '' }));
       }
       return { role: 'master', room: base, players, fallen, maxPlayers: MAX_PLAYERS };
     }
@@ -1024,16 +1038,22 @@ const OPS = {
   },
 
   // Поправка майстра: промах (кидок шкоди не рахується) або додана/віднята шкода персонажа
-  async eventDamage(c, { roomId, charId, delta, rollId, miss, note }) {
+  // mark: 0 — зняти позначку, 1 — провал/промах, 2 — успіх/влучання (miss — старий параметр: true = 1)
+  async eventDamage(c, { roomId, charId, delta, rollId, miss, mark, note }) {
     const room = await requireMaster(c, roomId);
     if (!room.event_id) fail('Зараз немає активної події');
     if (rollId != null) {
       const r = await first(c.db, 'SELECT * FROM dice_rolls WHERE id = ? AND event_id = ?', int(rollId, 0, 1e12, 0), room.event_id);
       if (!r) fail('Кидок не знайдено');
       const d = JSON.parse(r.data);
-      await run(c.db, 'UPDATE dice_rolls SET miss = ? WHERE id = ?', miss ? 1 : 0, r.id);
+      let m = mark == null ? (miss ? 1 : 0) : int(mark, 0, 2, 0);
+      if (d.kind === 'damage' && m === 2) m = 0;
+      await run(c.db, 'UPDATE dice_rolls SET miss = ? WHERE id = ?', m, r.id);
       const ch = await first(c.db, 'SELECT sheet FROM characters WHERE id = ?', r.char_id);
-      await addLog(c, room, `${miss ? 'позначив промах' : 'зняв позначку промаху'}: ${ch ? JSON.parse(ch.sheet).name : ''} — ${d.label} (${d.total})`);
+      const what = d.kind === 'damage'
+        ? (m ? 'позначив промах' : 'зняв позначку промаху')
+        : (m === 2 ? 'позначив успіх' : m === 1 ? 'позначив провал' : 'зняв позначку');
+      await addLog(c, room, `${what}: ${ch ? JSON.parse(ch.sheet).name : ''} — ${d.label} (${d.total})`);
       return { ok: true };
     }
     const ch = await first(c.db, 'SELECT * FROM characters WHERE id = ? AND room_id = ?', int(charId, 0, 1e12, 0), room.id);
@@ -1247,6 +1267,9 @@ const OPS = {
         const was = (old.resUsed || {})[r.id] || 0;
         if (r.used > was) await evAct(c, room, ch, 'res', r.used - was, { name: r.name });
       }
+      const di = R.inspCount(s) - R.inspCount(old);
+      if (di < 0) await evAct(c, room, ch, 'act', 1, { text: `використав натхнення ×${-di}` });
+      if (di > 0) await evAct(c, room, ch, 'act', 1, { text: `отримав натхнення ×${di}` });
     }
     const text = [...extra, ...diff].join('; ');
     if (isMaster) {
@@ -1310,6 +1333,7 @@ const OPS = {
     const { item, ch, room } = await itemAccess(c, itemId, { owner: true });
     if (!R.isConsumable(item.data)) fail('Це не витратний предмет — прибрати його може лише майстер');
     await run(c.db, 'DELETE FROM items WHERE id = ?', item.id);
+    await evAct(c, room, ch, 'act', 1, { text: `викинув ${itemName(item)} ×${item.qty}` });
     await addLog(c, room, `викинув ${itemName(item)} ×${item.qty}`, charActor(c, ch));
     notify(c, room.master_id, `🗑 ${ch.sheet.name} викинув ${itemName(item)} ×${item.qty}.`);
   },
@@ -1329,6 +1353,7 @@ const OPS = {
     const parts = [];
     if (eq !== item.equipped) parts.push(eq ? 'екіпірував' : 'зняв');
     if (at !== item.attuned) parts.push(at ? 'налаштувався на' : 'скасував налаштування на');
+    if (!isMaster) for (const v of parts) await evAct(c, room, ch, 'act', 1, { text: `${v} ${itemName(item)}` });
     if (parts.length) await addLog(c, room, `${parts.join(' і ')} ${itemName(item)}${isMaster ? ` (${ch.sheet.name})` : ''}`, isMaster ? undefined : charActor(c, ch));
   },
 
@@ -1341,6 +1366,7 @@ const OPS = {
     const n = int(qty, 1, item.qty, 1);
     await decItem(c, item, n);
     await addItemToChar(c, to.id, item.data, n);
+    await evAct(c, room, ch, 'act', 1, { text: `передав ${itemName(item)} ×${n} → ${to.sheet.name}` });
     await addLog(c, room, `передав ${itemName(item)} ×${n} → ${to.sheet.name}`, charActor(c, ch));
     notify(c, to.userId, `🎁 ${ch.sheet.name} передав тобі ${itemName(item)} ×${n}.`);
     notify(c, room.master_id, `🤝 ${ch.sheet.name} передав ${itemName(item)} ×${n} → ${to.sheet.name}.`);
@@ -1354,6 +1380,7 @@ const OPS = {
     if (!R.COINS.some((k) => d[k] > 0)) fail('Вкажи суму');
     for (const k of R.COINS) m[k] = (m[k] || 0) - d[k];
     await saveSheet(c, ch);
+    await evAct(c, room, ch, 'act', 1, { text: `витратив ${moneyStr(d)}` });
     await addLog(c, room, `витратив ${moneyStr(d)} (залишилось ${moneyStr(m)})`, charActor(c, ch));
     notify(c, room.master_id, `💰 ${ch.sheet.name} витратив ${moneyStr(d)}. Залишилось: ${moneyStr(m)}.`);
   },
@@ -1371,6 +1398,7 @@ const OPS = {
     for (const k of R.COINS) { m[k] = (m[k] || 0) - d[k]; to.sheet.money[k] = (to.sheet.money[k] || 0) + d[k]; }
     await saveSheet(c, ch);
     await saveSheet(c, to);
+    await evAct(c, room, ch, 'act', 1, { text: `передав ${moneyStr(d)} → ${to.sheet.name}` });
     await addLog(c, room, `передав ${moneyStr(d)} → ${to.sheet.name}`, charActor(c, ch));
     notify(c, to.userId, `💰 ${ch.sheet.name} передав тобі ${moneyStr(d)}.`);
     notify(c, room.master_id, `💰 ${ch.sheet.name} передав ${moneyStr(d)} → ${to.sheet.name}.`);
@@ -1454,6 +1482,7 @@ const OPS = {
     s.hitDiceUsed = (s.hitDiceUsed || 0) + 1;
     await saveSheet(c, ch);
     await evAct(c, room, ch, 'heal', s.hp.cur - before);
+    await evAct(c, room, ch, 'act', 1, { text: `витратив кість хітів (к${hd})` });
     await addLog(c, room, `витратив кість хітів (к${hd}: ${roll}${conMod ? ` ${R.fmtMod(conMod)}` : ''}): ХП ${before} → ${s.hp.cur}`, charActor(c, ch));
     return { roll, heal: s.hp.cur - before, left: s.level - s.hitDiceUsed };
   },

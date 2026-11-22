@@ -491,17 +491,25 @@ function eventPanel(d) {
   if (!ev) return '<button class="btn block ev-start" data-act="eventStartModal">⚔️ Початок події</button>';
   const [tn, ti] = evType(ev.type);
   const chars = ev.chars || [];
-  const rolls = ev.dmgRolls || [];
+  const rolls = ev.rolls || [];
+  const combat = ev.type === 'combat';
+  // у бою завжди видно шкоду; в інших подіях — лише якщо вона була
+  const chip = (icon, v, always) => (v || always ? `<span class="ev-st">${icon} ${v}</span>` : '');
+  const markBtns = (r) => (r.kind === 'damage'
+    ? `<button class="btn sm${r.mark === 1 ? '' : ' danger'}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 1 ? 0 : 1}">${r.mark === 1 ? 'Влучання' : 'Промах'}</button>`
+    : `<div class="ev-marks"><button class="ev-mk ok${r.mark === 2 ? ' on' : ''}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 2 ? 0 : 2}" aria-label="Успіх">✓</button>
+      <button class="ev-mk fail${r.mark === 1 ? ' on' : ''}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 1 ? 0 : 1}" aria-label="Провал">✗</button></div>`);
   return `<div class="card ev-card"><div class="row"><div class="grow"><b class="ev-name">${ti} ${esc(ev.name)}</b>
     <small class="hint">${tn} · триває ${evMins(ev)} хв</small></div><span class="ev-live">● запис</span></div>
-    <div class="ev-legend hint">⚔️ завдав шкоди · 🩸 отримав · 💚 лікування</div>
+    <div class="ev-legend hint">⚔️ завдав шкоди · 🩸 отримав · 💚 лікування · 🎲 кидки · 📌 інші дії</div>
     ${chars.length ? chars.map((x) => `<div class="ln ev-ch"><span class="grow">${esc(x.name)}</span>
-      <span class="ev-st">⚔️ ${x.dealt}</span><span class="ev-st">🩸 ${x.taken}</span><span class="ev-st">💚 ${x.heal}</span>
-      <button class="btn sm" data-act="eventAdjModal" data-id="${x.charId}" data-name="${esc(x.name)}">± шкода</button></div>`).join('')
+      ${chip('⚔️', x.dealt, combat)}${chip('🩸', x.taken, combat)}${chip('💚', x.heal, false)}${chip('🎲', x.rolls, true)}${chip('📌', x.acts, false)}
+      ${combat || x.dealt ? `<button class="btn sm" data-act="eventAdjModal" data-id="${x.charId}" data-name="${esc(x.name)}">± шкода</button>` : ''}</div>`).join('')
     : '<div class="ln hint">Персонажів у кімнаті ще немає</div>'}
-    ${rolls.length ? `<button class="link mt" data-act="eventRolls">${S.evRolls ? '▾' : '▸'} Кидки шкоди (${rolls.length})</button>
-    ${S.evRolls ? rolls.map((r) => `<div class="ln ev-roll${r.miss ? ' miss' : ''}"><span class="grow">${esc(r.name)} · <span>${esc(r.label)}</span></span><b class="v">${r.total}</b>
-      <button class="btn sm${r.miss ? '' : ' danger'}" data-act="eventMiss" data-id="${r.id}" data-miss="${r.miss ? '' : '1'}">${r.miss ? 'Влучання' : 'Промах'}</button></div>`).join('') : ''}` : ''}
+    ${rolls.length ? `<button class="link mt" data-act="eventRolls">${S.evRolls ? '▾' : '▸'} Кидки події (${rolls.length})</button>
+    ${S.evRolls ? `<div class="hint ev-legend">Познач успіх ✓ чи провал ✗ — це буде у звіті. Кидок шкоди з позначкою «Промах» не рахується.</div>
+    ${rolls.map((r) => `<div class="ln ev-roll${r.kind === 'damage' && r.mark === 1 ? ' miss' : ''}"><span class="grow">${esc(r.name)} · <span>${esc(r.label)}</span></span>
+      <b class="v${r.crit === 20 ? ' c20' : r.crit === 1 ? ' c1' : ''}">${r.total}</b>${markBtns(r)}</div>`).join('')}` : ''}` : ''}
     <button class="btn primary block mt" data-act="eventEnd">🏁 Завершити подію</button></div>`;
 }
 
@@ -2640,7 +2648,7 @@ const ACT = {
     await reloadAfter(() => api('endEvent', { roomId: roomId() }), '📊 Звіт події надіслано в чат');
   },
   eventRolls: () => { S.evRolls = !S.evRolls; render(); },
-  eventMiss: ({ id, miss }) => reloadAfter(() => api('eventDamage', { roomId: roomId(), rollId: Number(id), miss: !!miss })),
+  eventMark: ({ id, m }) => reloadAfter(() => api('eventDamage', { roomId: roomId(), rollId: Number(id), mark: Number(m) })),
   eventAdjModal: ({ id, name }) => openModal({ type: 'eventAdj', charId: Number(id), name, amount: '', note: '' }),
   eventAdjQuick: ({ n }) => { S.modal.amount = String(num(S.modal.amount) + Number(n)); renderModal(); },
   eventAdjSave: async () => {
