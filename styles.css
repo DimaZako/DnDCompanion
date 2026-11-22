@@ -429,6 +429,31 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .ev-mk { width: 34px; height: 30px; border-radius: 9px; background: var(--soft); font-weight: 800; font-size: 15px; color: var(--hint); }
 .ev-mk.ok.on { background: color-mix(in srgb, #2fbf4a 25%, var(--soft)); color: #2fbf4a; box-shadow: inset 0 0 0 1.5px #2fbf4a; }
 .ev-mk.fail.on { background: color-mix(in srgb, var(--danger) 22%, var(--soft)); color: var(--danger); box-shadow: inset 0 0 0 1.5px var(--danger); }
+/* стрічка кидків гравців (вкладка 🎲 майстра) */
+.mtabs { margin-top: 12px; }
+.tabs .tab-dice { position: relative; }
+.tab-dice .dot { position: absolute; top: 5px; right: 9px; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--card); }
+.roll-hint { margin: 10px 4px 8px; font-size: 13px; }
+.roll-c { padding: 12px 14px; }
+.roll-c.miss .roll-v { text-decoration: line-through; opacity: .6; }
+.roll-who { gap: 10px; align-items: center; }
+.roll-c .ava.sm { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 17px; background: color-mix(in srgb, var(--cls, var(--accent)) 22%, var(--soft)); flex: none; }
+.roll-who small { display: block; }
+.roll-v { font-size: 26px; font-weight: 800; min-width: 40px; text-align: right; color: var(--text); }
+.roll-v.c20 { color: var(--gold); }
+.roll-v.c1 { color: var(--danger); }
+.roll-what { margin: 8px 0 2px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.roll-c .dice-bd { display: block; margin-top: 2px; }
+.roll-c .badge.gold, .roll-c > .badge.red { margin-top: 6px; display: inline-block; }
+.ev-tag { font-weight: 500; max-width: 60%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roll-acts { margin-top: 10px; gap: 8px; }
+.ev-marks.wide { flex: 1; }
+.ev-marks.wide .ev-mk { flex: 1; width: auto; height: 36px; border-radius: 10px; font-size: 14px; }
+.ev-marks.wide .ev-mk span { font-weight: 600; }
+.roll-del { flex: none; width: 44px; height: 36px; padding: 0; }
+.mk { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 8px; white-space: nowrap; }
+.mk.ok { color: #2fbf4a; background: color-mix(in srgb, #2fbf4a 16%, transparent); }
+.mk.fail { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .ev-roll .v.c20 { color: var(--gold); }
 .ev-roll .v.c1 { color: var(--danger); }
 .ev-free { font-size: 13px; margin: 8px 4px 0; }

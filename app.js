@@ -14,7 +14,7 @@ const $toast = document.getElementById('toast');
 const $busy = document.getElementById('busy');
 
 const S = {
-  me: null, nav: [], room: null, modal: null, tab: 'sheet',
+  me: null, nav: [], room: null, modal: null, tab: 'sheet', mtab: 'room', rollLimit: 50, rollFilter: 0, seenRoll: {},
   wiz: null, newRoom: { name: '', pick: false, max: 5 }, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, log: null, logAll: false, bootError: null,
 };
 
@@ -241,7 +241,9 @@ async function loadRoom(silent) {
   const roomId = S.roomId;
   if (!roomId) return;
   try {
-    const d = await api('room', { roomId });
+    // стрічку кидків майстер отримує лише з відкритою вкладкою 🎲
+    const withRolls = S.mtab === 'dice' && S.room && S.room.role === 'master';
+    const d = await api('room', withRolls ? { roomId, rolls: S.rollLimit } : { roomId });
     if (S.roomId !== roomId) return;
     const changed = JSON.stringify(d) !== JSON.stringify(S.room);
     S.room = d;
@@ -319,7 +321,7 @@ function roomGone() {
 
 function openRoom(roomId) {
   S.roomId = roomId;
-  if (!S.room || S.room.room.id !== roomId) S.room = null;
+  if (!S.room || S.room.room.id !== roomId) { S.room = null; S.mtab = 'room'; S.rollFilter = 0; S.rollLimit = 50; }
   S.tab = 'sheet';
   go('room', { roomId });
   loadRoom();
@@ -506,6 +508,46 @@ function eventBanner(d) {
   const [tn, ti] = evType(ev.type);
   return `<div class="ev-banner">${ti} <span>Йде подія:</span> <b>${esc(ev.name)}</b> <small>· ${tn}</small></div>`;
 }
+// Позначки майстра для кидка: атака й шкода — попадання / промах, решта — успіх / провал
+const HIT_KINDS = ['attack', 'spellattack', 'damage'];
+const markNames = (r) => (HIT_KINDS.includes(r.kind) ? ['Попадання', 'Промах'] : ['Успіх', 'Провал']);
+function markBtns(r, compact) {
+  const [ok, no] = markNames(r);
+  const b = (cls, m, sym, name) => `<button class="ev-mk ${cls}${r.mark === m ? ' on' : ''}" data-act="rollMark" data-id="${r.id}" data-m="${r.mark === m ? 0 : m}"
+    aria-label="${esc(t(name))}" title="${esc(t(name))}">${sym}${compact ? '' : ` <span>${name}</span>`}</button>`;
+  return `<div class="ev-marks${compact ? '' : ' wide'}">${b('ok', 2, '✓', ok)}${b('fail', 1, '✗', no)}</div>`;
+}
+// Позначка біля кидка в історії гравця
+const markChip = (r) => (r.mark ? `<small class="mk ${r.mark === 2 ? 'ok' : 'fail'}">${r.mark === 2 ? '✓' : '✗'} <span>${markNames(r)[r.mark === 2 ? 0 : 1]}</span></small>` : '');
+// Стрічка кидків гравців для майстра (вкладка 🎲 у кімнаті)
+function rollFeed(d) {
+  const all = d.room.rolls;
+  if (!all) return '<div class="spinner" style="margin:30px auto"></div>';
+  const chars = roomChars(d);
+  const f = S.rollFilter;
+  const list = f ? all.filter((r) => r.charId === f) : all;
+  let h = `<p class="hint roll-hint">Кидки гравців цієї сесії. Познач ✓ / ✗ — гравець побачить позначку, вона потрапить і у звіт події. 🗑 — видалити кидок звідусіль.</p>`;
+  if (chars.length > 1) {
+    h += `<div class="chips wrap">${[[0, 'Усі']].concat(chars.map((ch) => [ch.id, ch.sheet.name]))
+      .map(([id, n]) => `<button class="chip ${f === id ? 'on' : ''}" data-act="rollFilter" data-id="${id}"${id ? ' data-notr' : ''}>${esc(n)}</button>`).join('')}</div>`;
+  }
+  if (!list.length) return h + empty('🎲', 'Кидків поки немає');
+  h += list.map((r) => {
+    const ei = r.ev ? evType(r.ev.type)[1] : '';
+    return `<div class="card roll-c${r.kind === 'damage' && r.mark === 1 ? ' miss' : ''}" data-roll="${r.id}" ${clsAttrs(r.classId, r.subclassId)}>
+      <div class="row roll-who"><div class="ava sm">${CLASS_ICON[r.classId] || '🧝'}</div><div class="grow"><b data-notr>${esc(r.charName)}</b>
+        <small class="hint"><span data-notr>${esc(r.player)}</span> · ${fmtTime(r.ts)}</small></div>
+        <b class="roll-v${r.crit === 20 ? ' c20' : r.crit === 1 ? ' c1' : ''}">${r.total}</b></div>
+      <div class="roll-what">${esc(r.label)}${r.mode ? ` <small class="hint">· ${r.mode === 'adv' ? 'з перевагою' : 'з перешкодою'}</small>` : ''}
+        ${r.ev ? `<span class="badge red ev-tag">${ei} <span data-notr>${esc(r.ev.name)}</span></span>` : ''}</div>
+      <small class="hint dice-bd">${rollBreakdown(r)}</small>
+      ${r.crit === 20 ? '<span class="badge gold">природна 20!</span>' : r.crit === 1 ? '<span class="badge red">природна 1</span>' : ''}
+      <div class="row roll-acts">${markBtns(r)}<button class="btn sm danger roll-del" data-act="rollDel" data-id="${r.id}" aria-label="${esc(t('Видалити кидок'))}">🗑</button></div></div>`;
+  }).join('');
+  if (all.length >= S.rollLimit) h += '<button class="btn block mt" data-act="rollMore">Показати ще</button>';
+  return h;
+}
+
 // Персонажі кімнати (живі) та подія, в якій кожен зараз
 const roomChars = (d) => d.players.filter((p) => p.character).map((p) => p.character);
 const charEvent = (d, id) => (d.room.events || []).find((e) => e.members.includes(id));
@@ -529,10 +571,6 @@ function eventCard(d, ev, many) {
   const open = !!(S.evRolls && S.evRolls[ev.id]);
   // у бою завжди видно шкоду; в інших подіях — лише якщо вона була
   const chip = (icon, v, always) => (v || always ? `<span class="ev-st">${icon} ${v}</span>` : '');
-  const markBtns = (r) => (r.kind === 'damage'
-    ? `<button class="btn sm${r.mark === 1 ? '' : ' danger'}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 1 ? 0 : 1}">${r.mark === 1 ? 'Влучання' : 'Промах'}</button>`
-    : `<div class="ev-marks"><button class="ev-mk ok${r.mark === 2 ? ' on' : ''}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 2 ? 0 : 2}" aria-label="Успіх">✓</button>
-      <button class="ev-mk fail${r.mark === 1 ? ' on' : ''}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 1 ? 0 : 1}" aria-label="Провал">✗</button></div>`);
   return `<div class="card ev-card" data-ev="${ev.id}"><div class="row"><div class="grow"><b class="ev-name">${ti} ${esc(ev.name)}</b>
     <small class="hint">${tn} · триває ${evMins(ev)} хв</small></div><span class="ev-live">● запис</span></div>
     <div class="ev-legend hint">⚔️ завдав шкоди · 🩸 отримав · 💚 лікування · 🎲 кидки · 📌 інші дії</div>
@@ -541,9 +579,9 @@ function eventCard(d, ev, many) {
       ${combat || x.dealt ? `<button class="btn sm" data-act="eventAdjModal" data-id="${x.charId}" data-name="${esc(x.name)}">± шкода</button>` : ''}</div>`).join('')
     : '<div class="ln hint">Учасників немає</div>'}
     ${rolls.length ? `<button class="link mt" data-act="eventRolls" data-id="${ev.id}">${open ? '▾' : '▸'} Кидки події (${rolls.length})</button>
-    ${open ? `<div class="hint ev-legend">Познач успіх ✓ чи провал ✗ — це буде у звіті. Кидок шкоди з позначкою «Промах» не рахується.</div>
+    ${open ? `<div class="hint ev-legend">Познач ✓ попадання / успіх чи ✗ промах / провал — це буде у звіті. Кидок шкоди з позначкою «Промах» не рахується.</div>
     ${rolls.map((r) => `<div class="ln ev-roll${r.kind === 'damage' && r.mark === 1 ? ' miss' : ''}"><span class="grow">${esc(r.name)} · <span>${esc(r.label)}</span></span>
-      <b class="v${r.crit === 20 ? ' c20' : r.crit === 1 ? ' c1' : ''}">${r.total}</b>${markBtns(r)}</div>`).join('')}` : ''}` : ''}
+      <b class="v${r.crit === 20 ? ' c20' : r.crit === 1 ? ' c1' : ''}">${r.total}</b>${markBtns(r, true)}</div>`).join('')}` : ''}` : ''}
     <div class="btns mt"><button class="btn sm" data-act="eventMembersModal" data-id="${ev.id}">👥 Учасники</button>
       ${many ? `<button class="btn sm" data-act="eventMergeModal" data-id="${ev.id}">🔗 Об’єднати</button>` : ''}</div>
     <button class="btn primary block mt" data-act="eventEnd" data-id="${ev.id}">🏁 Завершити подію</button></div>`;
@@ -565,7 +603,8 @@ function masterRoomHtml(d) {
   <div class="card"><div class="row"><div class="grow"><small>Код кімнати</small><div class="code">${esc(r.id)}</div></div>
     <button class="btn primary" data-act="invite">📨 Запросити</button></div>
     <small class="hint">Сесія ${r.session} · гравців ${players.length}/${d.maxPlayers}</small></div>
-  ${eventPanel(d)}
+  ${masterTabs(d)}
+  ${S.mtab === 'dice' ? rollFeed(d) : `${eventPanel(d)}
   <div class="btns"><button class="btn" data-act="openLog">📜 Журнал</button><button class="btn" data-act="endSession">🏁 Завершити сесію</button></div>
   <div class="btns"><button class="btn sm" data-act="restAll" data-kind="short">☕ Короткий відпочинок для всіх</button><button class="btn sm" data-act="restAll" data-kind="long">🌙 Довгий для всіх</button></div>
   <h3 class="sec">Гравці</h3>
@@ -573,7 +612,16 @@ function masterRoomHtml(d) {
   ${d.fallen.length ? `<details class="mt"><summary>☠ Загиблі персонажі (${d.fallen.length})</summary>
     ${d.fallen.map((f) => `<div class="card list-item"><div class="ava">💀</div><div class="meta"><b>${esc(f.name)}</b>
     <small>${esc(R.CLASSES[f.classId] ? R.CLASSES[f.classId].name : '')} ${f.level} рів.</small></div>
-    <button class="btn sm" data-act="revive" data-id="${f.id}">✨ Воскресити</button></div>`).join('')}</details>` : ''}`;
+    <button class="btn sm" data-act="revive" data-id="${f.id}">✨ Воскресити</button></div>`).join('')}</details>` : ''}`}`;
+}
+// Вкладки кімнати майстра: «Кімната» і 🎲 (кидки гравців; крапка — є нові кидки)
+function masterTabs(d) {
+  const r = d.room;
+  const last = r.lastRollId || 0;
+  if (S.seenRoll[r.id] == null || S.mtab === 'dice') S.seenRoll[r.id] = last;
+  const fresh = last > S.seenRoll[r.id];
+  return `<div class="tabs mtabs"><button class="${S.mtab !== 'dice' ? 'on' : ''}" data-act="mtab" data-tab="room">🏰 Кімната</button>
+    <button class="tab-dice${S.mtab === 'dice' ? ' on' : ''}" data-act="mtab" data-tab="dice" aria-label="${esc(t('Кидки гравців'))}">🎲${fresh ? '<i class="dot"></i>' : ''}</button></div>`;
 }
 function playerCard(p) {
   const ch = p.character;
@@ -764,7 +812,7 @@ function diceTab(ch, dv) {
   }
   const hist = ch.rolls || [];
   h += `<div class="lines"><h3>Історія кидків</h3>${hist.length ? hist.map((x) => `<div class="ln dice-h"><span class="hint nw">${fmtTime(x.ts)}</span>
-    <span class="grow"><span>${esc(x.label)}</span><br><small class="hint">${rollBreakdown(x)}</small></span><b class="v${x.crit === 20 ? ' c20' : x.crit === 1 ? ' c1' : ''}">${x.total}</b></div>`).join('')
+    <span class="grow"><span>${esc(x.label)}</span> ${markChip(x)}<br><small class="hint">${rollBreakdown(x)}</small></span><b class="v${x.crit === 20 ? ' c20' : x.crit === 1 ? ' c1' : ''}">${x.total}</b></div>`).join('')
     : '<div class="ln hint">Кидків ще не було</div>'}</div>`;
   return h;
 }
@@ -2752,7 +2800,21 @@ const ACT = {
     await reloadAfter(() => api('endEvent', { roomId: roomId(), eventId: ev.id }), '📊 Звіт події надіслано в чат');
   },
   eventRolls: ({ id }) => { S.evRolls = S.evRolls || {}; S.evRolls[id] = !S.evRolls[id]; render(); },
-  eventMark: ({ id, m }) => reloadAfter(() => api('eventDamage', { roomId: roomId(), rollId: Number(id), mark: Number(m) })),
+  rollMark: ({ id, m }) => reloadAfter(() => api('markRoll', { roomId: roomId(), rollId: Number(id), mark: Number(m) })),
+  rollDel: async ({ id }) => {
+    const r = ((S.room && S.room.room.rolls) || []).find((x) => x.id === Number(id))
+      || ((S.room && S.room.room.events) || []).flatMap((e) => e.rolls || []).find((x) => x.id === Number(id));
+    if (!r) return;
+    if (!(await confirmBox(`Видалити кидок «${r.label}» (${r.total}) — ${r.charName || r.name}? Він зникне з історії гравця, журналу й звітів.`))) return;
+    await reloadAfter(() => api('deleteRoll', { roomId: roomId(), rollId: r.id }), 'Кидок видалено');
+  },
+  mtab: ({ tab }) => {
+    S.mtab = tab === 'dice' ? 'dice' : 'room';
+    render();
+    if (S.mtab === 'dice') loadRoom(true);
+  },
+  rollFilter: ({ id }) => { S.rollFilter = Number(id) || 0; render(); },
+  rollMore: () => { S.rollLimit += 50; loadRoom(true); },
   eventAdjModal: ({ id, name }) => openModal({ type: 'eventAdj', charId: Number(id), name, amount: '', note: '' }),
   eventAdjQuick: ({ n }) => { S.modal.amount = String(num(S.modal.amount) + Number(n)); renderModal(); },
   eventAdjSave: async () => {
