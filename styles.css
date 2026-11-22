@@ -431,3 +431,10 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .ev-mk.fail.on { background: color-mix(in srgb, var(--danger) 22%, var(--soft)); color: var(--danger); box-shadow: inset 0 0 0 1.5px var(--danger); }
 .ev-roll .v.c20 { color: var(--gold); }
 .ev-roll .v.c1 { color: var(--danger); }
+.ev-free { font-size: 13px; margin: 8px 4px 0; }
+.ev-badge { max-width: 48%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; }
+.ev-picks { margin: 2px 0 4px; }
+.ev-pick { padding: 8px 2px; gap: 10px; border-bottom: 1px solid color-mix(in srgb, var(--hint) 18%, transparent); }
+.ev-pick:last-child { border-bottom: 0; }
+.ev-pick input { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+.ev-pick small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }

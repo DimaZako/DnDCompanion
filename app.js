@@ -478,6 +478,7 @@ const VIEWS = {
 // ---------- Події (бій, дослідження…) ----------
 const evType = (t) => R.EVENT_TYPES[t] || R.EVENT_TYPES.other;
 const evMins = (ev) => Math.max(0, Math.round((Date.now() / 1000 - ev.startedAt) / 60));
+const findEv = (id) => ((S.room && S.room.room.events) || []).find((e) => e.id === Number(id));
 // Плашка для гравців під час події
 function eventBanner(d) {
   const ev = d.room && d.room.event;
@@ -485,32 +486,55 @@ function eventBanner(d) {
   const [tn, ti] = evType(ev.type);
   return `<div class="ev-banner">${ti} <span>Йде подія:</span> <b>${esc(ev.name)}</b> <small>· ${tn}</small></div>`;
 }
-// Панель майстра: старт події або живі підсумки з поправками
-function eventPanel(d) {
-  const ev = d.room.event;
-  if (!ev) return '<button class="btn block ev-start" data-act="eventStartModal">⚔️ Початок події</button>';
+// Персонажі кімнати (живі) та подія, в якій кожен зараз
+const roomChars = (d) => d.players.filter((p) => p.character).map((p) => p.character);
+const charEvent = (d, id) => (d.room.events || []).find((e) => e.members.includes(id));
+// Вибір учасників події (галочки); evId — подія, яку редагуємо
+function evCharPicks(d, evId, sel) {
+  const chars = roomChars(d);
+  if (!chars.length) return '<p class="hint">Персонажів у кімнаті ще немає</p>';
+  return `<div class="ev-picks">${chars.map((ch) => {
+    const other = charEvent(d, ch.id);
+    const busy = other && other.id !== evId;
+    return `<label class="row ev-pick"><input type="checkbox" data-arr="modal.chars" data-v="${ch.id}" ${sel.includes(String(ch.id)) ? 'checked' : ''}>
+      <span class="grow">${esc(ch.sheet.name)}</span>${busy ? `<small class="hint">у події «${esc(other.name)}»</small>` : ''}</label>`;
+  }).join('')}</div>`;
+}
+// Картка однієї події: живі підсумки, поправки, позначки кидків
+function eventCard(d, ev, many) {
   const [tn, ti] = evType(ev.type);
   const chars = ev.chars || [];
   const rolls = ev.rolls || [];
   const combat = ev.type === 'combat';
+  const open = !!(S.evRolls && S.evRolls[ev.id]);
   // у бою завжди видно шкоду; в інших подіях — лише якщо вона була
   const chip = (icon, v, always) => (v || always ? `<span class="ev-st">${icon} ${v}</span>` : '');
   const markBtns = (r) => (r.kind === 'damage'
     ? `<button class="btn sm${r.mark === 1 ? '' : ' danger'}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 1 ? 0 : 1}">${r.mark === 1 ? 'Влучання' : 'Промах'}</button>`
     : `<div class="ev-marks"><button class="ev-mk ok${r.mark === 2 ? ' on' : ''}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 2 ? 0 : 2}" aria-label="Успіх">✓</button>
       <button class="ev-mk fail${r.mark === 1 ? ' on' : ''}" data-act="eventMark" data-id="${r.id}" data-m="${r.mark === 1 ? 0 : 1}" aria-label="Провал">✗</button></div>`);
-  return `<div class="card ev-card"><div class="row"><div class="grow"><b class="ev-name">${ti} ${esc(ev.name)}</b>
+  return `<div class="card ev-card" data-ev="${ev.id}"><div class="row"><div class="grow"><b class="ev-name">${ti} ${esc(ev.name)}</b>
     <small class="hint">${tn} · триває ${evMins(ev)} хв</small></div><span class="ev-live">● запис</span></div>
     <div class="ev-legend hint">⚔️ завдав шкоди · 🩸 отримав · 💚 лікування · 🎲 кидки · 📌 інші дії</div>
     ${chars.length ? chars.map((x) => `<div class="ln ev-ch"><span class="grow">${esc(x.name)}</span>
       ${chip('⚔️', x.dealt, combat)}${chip('🩸', x.taken, combat)}${chip('💚', x.heal, false)}${chip('🎲', x.rolls, true)}${chip('📌', x.acts, false)}
       ${combat || x.dealt ? `<button class="btn sm" data-act="eventAdjModal" data-id="${x.charId}" data-name="${esc(x.name)}">± шкода</button>` : ''}</div>`).join('')
-    : '<div class="ln hint">Персонажів у кімнаті ще немає</div>'}
-    ${rolls.length ? `<button class="link mt" data-act="eventRolls">${S.evRolls ? '▾' : '▸'} Кидки події (${rolls.length})</button>
-    ${S.evRolls ? `<div class="hint ev-legend">Познач успіх ✓ чи провал ✗ — це буде у звіті. Кидок шкоди з позначкою «Промах» не рахується.</div>
+    : '<div class="ln hint">Учасників немає</div>'}
+    ${rolls.length ? `<button class="link mt" data-act="eventRolls" data-id="${ev.id}">${open ? '▾' : '▸'} Кидки події (${rolls.length})</button>
+    ${open ? `<div class="hint ev-legend">Познач успіх ✓ чи провал ✗ — це буде у звіті. Кидок шкоди з позначкою «Промах» не рахується.</div>
     ${rolls.map((r) => `<div class="ln ev-roll${r.kind === 'damage' && r.mark === 1 ? ' miss' : ''}"><span class="grow">${esc(r.name)} · <span>${esc(r.label)}</span></span>
       <b class="v${r.crit === 20 ? ' c20' : r.crit === 1 ? ' c1' : ''}">${r.total}</b>${markBtns(r)}</div>`).join('')}` : ''}` : ''}
-    <button class="btn primary block mt" data-act="eventEnd">🏁 Завершити подію</button></div>`;
+    <div class="btns mt"><button class="btn sm" data-act="eventMembersModal" data-id="${ev.id}">👥 Учасники</button>
+      ${many ? `<button class="btn sm" data-act="eventMergeModal" data-id="${ev.id}">🔗 Об’єднати</button>` : ''}</div>
+    <button class="btn primary block mt" data-act="eventEnd" data-id="${ev.id}">🏁 Завершити подію</button></div>`;
+}
+// Панель майстра: активні події (можуть іти паралельно) + хто зараз поза подіями
+function eventPanel(d) {
+  const evs = d.room.events || [];
+  const free = roomChars(d).filter((ch) => !charEvent(d, ch.id));
+  return `${evs.map((ev) => eventCard(d, ev, evs.length > 1)).join('')}
+    ${evs.length && free.length ? `<div class="hint ev-free">🚶 Поза подією: ${free.map((ch) => `<b>${esc(ch.sheet.name)}</b>`).join(', ')}</div>` : ''}
+    <button class="btn block ev-start" data-act="eventStartModal">${evs.length ? '⚔️ Ще одна подія' : '⚔️ Початок події'}</button>`;
 }
 
 // ---------- Кімната майстра ----------
@@ -541,11 +565,14 @@ function playerCard(p) {
   }
   const s = ch.sheet;
   const dv = derived(ch);
+  // у якій події зараз персонаж (майстру видно, хто де, коли група розділилась)
+  const pev = S.room && S.room.room && S.room.room.events ? charEvent(S.room, ch.id) : null;
   return `<div class="card tap" data-act="openChar" data-id="${ch.id}" ${clsAttrs(s.classId, s.subclassId)}><div class="list-item">
     <div class="ava">${CLASS_ICON[s.classId] || '🧝'}</div>
     <div class="meta"><b>${esc(s.name)}</b><small>${esc(raceName(s))} · ${esc(className(s))} ${s.level} рів. · ${esc(p.name)}</small></div>
     <div class="center"><small>${ab('КЗ')}</small><div><b>${dv.ac}</b></div></div><span class="chev">›</span></div>
     <div class="row mt" style="margin-top:8px"><small class="grow">ХП ${s.hp.cur}/${s.hp.max}${s.hp.temp ? ` (+${s.hp.temp})` : ''}</small>
+    ${pev ? `<span class="badge red ev-badge">${evType(pev.type)[1]} <span data-notr>${esc(pev.name)}</span></span>` : ''}
     ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${R.shortRestActive(s, nowSec()) ? ' <span class="badge green">☕</span>' : ''}${R.inspCount(s) ? ` <span class="badge gold">⭐ ${R.inspCount(s)}</span>` : ''}</div>
     <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div></div>`;
 }
@@ -1676,11 +1703,27 @@ const MODALS = {
       : '<p class="hint mt">Зміни хітів бачить майстер у журналі. Відпочинок оголошує майстер.</p>'}`;
   },
 
-  eventStart: (m) => `${hdr('⚔️ Початок події', 'Усе, що зроблять гравці, запишеться окремо. Після завершення звіт прийде файлом у чат з ботом.')}
+  eventStart: (m) => `${hdr('⚔️ Початок події', 'Усе, що зроблять учасники, запишеться окремо. Після завершення звіт прийде файлом у чат з ботом.')}
     <label class="fld"><span>Назва</span><input data-bind="modal.name" maxlength="80" placeholder="Напр. Бій з гоблінами" value="${esc(m.name)}"></label>
     <div class="fld"><span>Тип</span></div>
     <div class="chips wrap">${Object.entries(R.EVENT_TYPES).map(([k, [n, i]]) => `<button class="chip ${m.evType === k ? 'on' : ''}" data-act="eventType" data-k="${k}">${i} ${n}</button>`).join('')}</div>
+    <div class="fld mt"><span>Учасники</span></div>
+    <p class="hint">Персонаж, який уже в іншій події, перейде в цю.</p>
+    ${evCharPicks(S.room, 0, m.chars)}
     <button class="btn primary block mt2" data-act="eventStart">Почати подію</button>`,
+
+  eventMembers: (m) => `${hdr('👥 Учасники', `${esc(m.name)} — хто бере участь у події`)}
+    <p class="hint">Персонаж з іншої події перейде в цю. Якщо інша подія залишиться без учасників — вона перетече в цю, звіт буде спільний. Прибереш усіх — подія завершиться, а звіт прийде в чат.</p>
+    ${evCharPicks(S.room, m.eventId, m.chars)}
+    <button class="btn primary block mt2" data-act="eventMembersSave">Зберегти</button>`,
+
+  eventMerge: (m) => {
+    const others = (S.room.room.events || []).filter((e) => e.id !== m.eventId);
+    return `${hdr('🔗 Об’єднати події', `Учасники й усі записи «${esc(m.name)}» перейдуть у вибрану подію. Звіт буде один — спільний.`)}
+    ${others.map((e) => `<div class="pick" data-act="eventMergePick" data-id="${e.id}"><input type="radio" ${m.intoId === e.id ? 'checked' : ''} tabindex="-1" style="pointer-events:none">
+      <span>${evType(e.type)[1]} ${esc(e.name)}</span><span class="v hint">👥 ${e.members.length}</span></div>`).join('')}
+    <button class="btn primary block mt2" data-act="eventMergeSave">Об’єднати</button>`;
+  },
 
   eventAdj: (m) => `${hdr('± Шкода', `${esc(m.name)} — поправка до завданої шкоди за подію`)}
     <label class="fld"><span>Скільки (можна від’ємне)</span><input type="number" inputmode="numeric" data-bind="modal.amount" value="${esc(m.amount)}"></label>
@@ -2633,21 +2676,50 @@ const ACT = {
   // --- Майстер: досвід, рівень, редактор ---
   xpModal: () => openModal({ type: 'xp', amount: '' }),
   // події
-  eventStartModal: () => openModal({ type: 'eventStart', name: '', evType: 'combat' }),
+  // за замовчуванням — усі, хто зараз поза подіями
+  eventStartModal: () => openModal({ type: 'eventStart', name: '', evType: 'combat',
+    chars: roomChars(S.room).filter((ch) => !charEvent(S.room, ch.id)).map((ch) => String(ch.id)) }),
   eventType: ({ k }) => { S.modal.evType = k; renderModal(); },
   eventStart: async () => {
     const m = S.modal;
-    const r = await reloadAfter(() => api('startEvent', { roomId: roomId(), name: m.name, type: m.evType }), '⚔️ Подію розпочато — дії гравців записуються');
-    if (r) closeModal();
+    if (!m.chars.length) { toast('Обери хоча б одного учасника', true); return; }
+    const r = await reloadAfter(() => api('startEvent', { roomId: roomId(), name: m.name, type: m.evType, charIds: m.chars.map(Number) }), '⚔️ Подію розпочато — дії учасників записуються');
+    if (r) { closeModal(); if (r.merged && r.merged.length) toast(`🔗 Подія «${r.merged.join('», «')}» перетекла в нову`); }
   },
-  eventEnd: async () => {
-    const ev = S.room && S.room.room.event;
+  eventMembersModal: ({ id }) => {
+    const ev = findEv(id);
+    if (ev) openModal({ type: 'eventMembers', eventId: ev.id, name: ev.name, chars: ev.members.map(String) });
+  },
+  eventMembersSave: async () => {
+    const m = S.modal;
+    if (!m.chars.length && !(await confirmBox(`Прибрати всіх учасників? Подія «${m.name}» завершиться, а звіт прийде файлом у чат з ботом.`))) return;
+    const r = await reloadAfter(() => api('eventMembers', { roomId: roomId(), eventId: m.eventId, charIds: m.chars.map(Number) }));
+    if (!r) return;
+    closeModal();
+    if (r.finished) toast(r.sent ? '📊 Подію завершено — звіт надіслано в чат' : 'Подію завершено, але файл не надіслано — відкрий чат із ботом і натисни «Почати» (Start)', !r.sent);
+    else if (r.merged && r.merged.length) toast(`🔗 Подія «${r.merged.join('», «')}» перетекла в цю`);
+    else toast('Збережено');
+  },
+  eventMergeModal: ({ id }) => {
+    const ev = findEv(id);
+    const others = (S.room.room.events || []).filter((e) => e.id !== Number(id));
+    if (ev && others.length) openModal({ type: 'eventMerge', eventId: ev.id, name: ev.name, intoId: others.length === 1 ? others[0].id : 0 });
+  },
+  eventMergePick: ({ id }) => { S.modal.intoId = Number(id); renderModal(); },
+  eventMergeSave: async () => {
+    const m = S.modal;
+    if (!m.intoId) { toast('Обери подію', true); return; }
+    const r = await reloadAfter(() => api('mergeEvent', { roomId: roomId(), eventId: m.eventId, intoId: m.intoId }));
+    if (r) { closeModal(); toast(`🔗 Події об’єднано в «${r.name}»`); }
+  },
+  eventEnd: async ({ id }) => {
+    const ev = findEv(id);
     if (!ev) return;
     if (!(await confirmBox(`Завершити подію «${ev.name}»? Звіт прийде файлом у чат з ботом.`))) return;
-    S.evRolls = false;
-    await reloadAfter(() => api('endEvent', { roomId: roomId() }), '📊 Звіт події надіслано в чат');
+    if (S.evRolls) delete S.evRolls[ev.id];
+    await reloadAfter(() => api('endEvent', { roomId: roomId(), eventId: ev.id }), '📊 Звіт події надіслано в чат');
   },
-  eventRolls: () => { S.evRolls = !S.evRolls; render(); },
+  eventRolls: ({ id }) => { S.evRolls = S.evRolls || {}; S.evRolls[id] = !S.evRolls[id]; render(); },
   eventMark: ({ id, m }) => reloadAfter(() => api('eventDamage', { roomId: roomId(), rollId: Number(id), mark: Number(m) })),
   eventAdjModal: ({ id, name }) => openModal({ type: 'eventAdj', charId: Number(id), name, amount: '', note: '' }),
   eventAdjQuick: ({ n }) => { S.modal.amount = String(num(S.modal.amount) + Number(n)); renderModal(); },

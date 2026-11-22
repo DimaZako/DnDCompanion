@@ -38,6 +38,10 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_events_room ON events(room_id)`,
   `CREATE TABLE IF NOT EXISTS event_acts (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, char_id INTEGER NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 1, data TEXT)`,
   `CREATE INDEX IF NOT EXISTS idx_event_acts ON event_acts(event_id)`,
+  // учасники подій (історія: коли приєднався / вийшов); персонаж — щонайбільше в одній активній події
+  `CREATE TABLE IF NOT EXISTS event_members (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, char_id INTEGER NOT NULL, joined_at INTEGER NOT NULL, left_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS idx_event_members ON event_members(event_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_event_members_char ON event_members(char_id)`,
 ];
 const DICE_SIDES = [4, 6, 8, 10, 12, 20, 100];
 const DICE_HISTORY = 15;
@@ -96,6 +100,8 @@ function ensureSchema(db) {
       .then(() => db.prepare('ALTER TABLE logs ADD COLUMN event_id INTEGER').run().catch(() => {}))
       .then(() => db.prepare('ALTER TABLE dice_rolls ADD COLUMN event_id INTEGER').run().catch(() => {}))
       .then(() => db.prepare('ALTER TABLE dice_rolls ADD COLUMN miss INTEGER NOT NULL DEFAULT 0').run().catch(() => {}))
+      // подію, що «перетекла» в іншу, позначаємо: її записи вже в тій події
+      .then(() => db.prepare('ALTER TABLE events ADD COLUMN merged_into INTEGER').run().catch(() => {}))
       .catch((e) => { schemaReady = null; throw e; });
   }
   return schemaReady;
@@ -359,6 +365,8 @@ async function charAccess(c, charId, { owner = false, master = false, alive = tr
   if (!((owner && isOwner) || (master && isMaster))) fail('Немає доступу до цього персонажа');
   if (isOwner && !isMaster && !(await isMember(c, room.id))) fail('Ти більше не в цій кімнаті');
   if (alive && !ch.alive) fail('Персонаж загинув');
+  // персонаж, якого стосується дія, — для запису в його подію
+  if (!c.ch) c.ch = ch;
   return { ch, room, isOwner, isMaster };
 }
 async function itemAccess(c, itemId, opts) {
@@ -372,19 +380,33 @@ async function saveSheet(c, ch) {
   await run(c.db, 'UPDATE characters SET sheet = ?, updated_at = ? WHERE id = ?', JSON.stringify(ch.sheet), now(), ch.id);
 }
 
-async function addLog(c, room, text, actorOverride) {
+// Активна подія, у якій зараз персонаж (кеш у межах запиту)
+async function charEventId(c, charId) {
+  if (!c.evc) c.evc = new Map();
+  if (!c.evc.has(charId)) {
+    const r = await first(c.db, `SELECT em.event_id FROM event_members em JOIN events e ON e.id = em.event_id
+      WHERE em.char_id = ? AND em.left_at IS NULL AND e.ended_at IS NULL ORDER BY em.id DESC LIMIT 1`, charId);
+    c.evc.set(charId, r ? r.event_id : null);
+  }
+  return c.evc.get(charId);
+}
+// evId: подія запису; якщо не вказано — подія персонажа, якого стосується дія
+async function addLog(c, room, text, actorOverride, evId) {
   const actor = actorOverride || (room.master_id === c.user.id ? `Майстер ${c.user.name}` : c.user.name);
+  if (evId === undefined) evId = c.ch && c.ch.roomId === room.id ? await charEventId(c, c.ch.id) : null;
   await c.db.batch([
-    q(c.db, 'INSERT INTO logs (room_id, session, ts, actor_id, actor, text, event_id) VALUES (?, ?, ?, ?, ?, ?, ?)', room.id, room.session, now(), c.user.id, actor, text, room.event_id || null),
+    q(c.db, 'INSERT INTO logs (room_id, session, ts, actor_id, actor, text, event_id) VALUES (?, ?, ?, ?, ?, ?, ?)', room.id, room.session, now(), c.user.id, actor, text, evId || null),
     q(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', room.id),
   ]);
 }
 const charActor = (c, ch) => `${ch.sheet.name} (${c.user.name})`;
 // Дія персонажа під час активної події (для структурованого звіту)
 async function evAct(c, room, ch, kind, value = 1, data = null) {
-  if (!room.event_id || !value) return;
+  if (!value) return;
+  const evId = await charEventId(c, ch.id);
+  if (!evId) return;
   await run(c.db, 'INSERT INTO event_acts (event_id, char_id, ts, kind, value, data) VALUES (?, ?, ?, ?, ?, ?)',
-    room.event_id, ch.id, now(), kind, value, data ? JSON.stringify(data) : null);
+    evId, ch.id, now(), kind, value, data ? JSON.stringify(data) : null);
 }
 // Для кого створюється персонаж: сам гравець або (за його проханням) майстер замість гравця
 async function creationTarget(c, room, forUserId) {
@@ -698,6 +720,76 @@ async function archiveRows(c, onlyId) {
 // ---------- Події: підсумки й звіт ----------
 async function getEvent(c, id) { return id ? first(c.db, 'SELECT * FROM events WHERE id = ?', id) : null; }
 const evTypeName = (t) => (R.EVENT_TYPES[t] || R.EVENT_TYPES.other)[0];
+const charName = async (c, id) => { const r = await first(c.db, 'SELECT sheet FROM characters WHERE id = ?', id); return r ? JSON.parse(r.sheet).name : String(id); };
+// Активні події кімнати з поточними учасниками
+async function activeEvents(c, room) {
+  // подія, розпочата до появи учасників (стара версія): учасники — усі живі персонажі
+  if (room.event_id) {
+    const old = await getEvent(c, room.event_id);
+    if (old && !old.ended_at && !(await first(c.db, 'SELECT 1 AS x FROM event_members WHERE event_id = ?', old.id))) {
+      for (const r of await all(c.db, 'SELECT id FROM characters WHERE room_id = ? AND alive = 1', room.id)) {
+        if (!(await charEventId(c, r.id))) await run(c.db, 'INSERT INTO event_members (event_id, char_id, joined_at) VALUES (?, ?, ?)', old.id, r.id, old.started_at);
+      }
+    }
+    await run(c.db, 'UPDATE rooms SET event_id = NULL WHERE id = ?', room.id);
+    room.event_id = null;
+    c.evc = null;
+  }
+  const evs = await all(c.db, 'SELECT * FROM events WHERE room_id = ? AND ended_at IS NULL ORDER BY id', room.id);
+  for (const ev of evs) ev.members = (await all(c.db, 'SELECT char_id FROM event_members WHERE event_id = ? AND left_at IS NULL ORDER BY id', ev.id)).map((r) => r.char_id);
+  return evs;
+}
+// Склад події: додані переходять з інших подій (спорожніла подія «перетікає» сюди — спільний звіт),
+// прибрані виходять; якщо в цій події не лишилось нікого — вона завершується зі звітом
+async function setEventMembers(c, room, ev, charIds) {
+  const want = [...new Set(charIds.map((x) => int(x, 0, 1e12, 0)))];
+  const valid = new Set((await all(c.db, 'SELECT id FROM characters WHERE room_id = ? AND alive = 1', room.id)).map((r) => r.id));
+  const cur = new Set((await all(c.db, 'SELECT char_id FROM event_members WHERE event_id = ? AND left_at IS NULL', ev.id)).map((r) => r.char_id));
+  const ts = now();
+  const emptied = new Set();
+  for (const id of want) {
+    if (cur.has(id) || !valid.has(id)) continue;
+    const from = await charEventId(c, id);
+    const nm = await charName(c, id);
+    if (from && from !== ev.id) {
+      await run(c.db, 'UPDATE event_members SET left_at = ? WHERE event_id = ? AND char_id = ? AND left_at IS NULL', ts, from, id);
+      await addLog(c, room, `${nm} переведено до події «${ev.name}»`, undefined, from);
+      emptied.add(from);
+    }
+    await run(c.db, 'INSERT INTO event_members (event_id, char_id, joined_at) VALUES (?, ?, ?)', ev.id, id, ts);
+    await addLog(c, room, `до події долучено: ${nm}`, undefined, ev.id);
+  }
+  for (const id of cur) {
+    if (want.includes(id)) continue;
+    await run(c.db, 'UPDATE event_members SET left_at = ? WHERE event_id = ? AND char_id = ? AND left_at IS NULL', ts, ev.id, id);
+    await addLog(c, room, `з події виведено: ${await charName(c, id)}`, undefined, ev.id);
+  }
+  c.evc = null;
+  const res = { merged: [], finished: null };
+  // події, з яких перевели всіх учасників сюди, об'єднуються з цією (один спільний звіт)
+  for (const id of emptied) {
+    if (await first(c.db, 'SELECT 1 AS x FROM event_members WHERE event_id = ? AND left_at IS NULL', id)) continue;
+    const from = await getEvent(c, id);
+    if (from && !from.ended_at) { await mergeEventInto(c, room, from, ev); res.merged.push(from.name); }
+  }
+  if (!(await first(c.db, 'SELECT 1 AS x FROM event_members WHERE event_id = ? AND left_at IS NULL', ev.id))) res.finished = await finishEvent(c, room, ev);
+  return res;
+}
+// Об'єднання: учасники й усі записи події from переходять у into
+async function mergeEventInto(c, room, from, into) {
+  await addLog(c, room, `подія «${from.name}» перейшла в подію «${into.name}»`, undefined, from.id);
+  const ts = now();
+  await c.db.batch([
+    q(c.db, 'UPDATE logs SET event_id = ? WHERE event_id = ?', into.id, from.id),
+    q(c.db, 'UPDATE dice_rolls SET event_id = ? WHERE event_id = ?', into.id, from.id),
+    q(c.db, 'UPDATE event_acts SET event_id = ? WHERE event_id = ?', into.id, from.id),
+    q(c.db, 'UPDATE event_members SET event_id = ? WHERE event_id = ?', into.id, from.id),
+    q(c.db, 'UPDATE events SET ended_at = ?, merged_into = ? WHERE id = ?', ts, into.id, from.id),
+    q(c.db, 'UPDATE events SET merged_into = ? WHERE merged_into = ?', into.id, from.id),
+    q(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', room.id),
+  ]);
+  c.evc = null;
+}
 // Підсумки по персонажах: шкода, лікування, усі кидки (навички, характеристики, рятівні, атаки…), інші дії
 // Позначка майстра для кидка (dice_rolls.miss): 0 — немає, 1 — провал/промах (шкода не рахується), 2 — успіх
 const ROLL_GROUPS = ['attack', 'skill', 'ability', 'save', 'init', 'free'];
@@ -705,14 +797,22 @@ async function eventStats(c, ev) {
   const rolls = (await all(c.db, 'SELECT id, char_id, ts, data, miss FROM dice_rolls WHERE event_id = ? ORDER BY id', ev.id))
     .map((r) => ({ id: r.id, charId: r.char_id, ts: r.ts, mark: r.miss || 0, ...JSON.parse(r.data) }));
   const acts = await all(c.db, 'SELECT * FROM event_acts WHERE event_id = ? ORDER BY id', ev.id);
-  const ids = new Set([...rolls.map((r) => r.charId), ...acts.map((a) => a.char_id)]);
+  const mem = await all(c.db, 'SELECT char_id, joined_at, left_at FROM event_members WHERE event_id = ? ORDER BY id', ev.id);
+  const ids = new Set([...mem.map((m) => m.char_id), ...rolls.map((r) => r.charId), ...acts.map((a) => a.char_id)]);
   const rows = await all(c.db, `SELECT ch.id, ch.alive, ch.sheet, u.first_name FROM characters ch LEFT JOIN users u ON u.id = ch.user_id
-    WHERE ch.room_id = ? AND (ch.alive = 1 OR ch.id IN (SELECT value FROM json_each(?))) ORDER BY ch.id`, ev.room_id, JSON.stringify([...ids]));
+    WHERE ch.id IN (SELECT value FROM json_each(?)) ORDER BY ch.id`, JSON.stringify([...ids]));
   const chars = rows.map((r) => {
     const sh = JSON.parse(r.sheet);
     return { charId: r.id, name: sh.name, player: r.first_name || '', raceId: sh.raceId, raceName: sh.raceName || '', classId: sh.classId, level: sh.level,
       dealt: 0, dmgRolls: 0, misses: 0, adj: 0, rolls: 0, nat20: 0, nat1: 0, taken: 0, heal: 0, down: 0, deathS: 0, deathF: 0,
-      groups: Object.fromEntries(ROLL_GROUPS.map((g) => [g, {}])), slots: {}, res: {}, items: {}, acts: [] };
+      groups: Object.fromEntries(ROLL_GROUPS.map((g) => [g, {}])), slots: {}, res: {}, items: {}, acts: [],
+      spans: mem.filter((m) => m.char_id === r.id).sort((x, y) => x.joined_at - y.joined_at).reduce((acc, m) => {
+        // перехід між подіями, що злилися, — один безперервний проміжок
+        const last = acc[acc.length - 1];
+        if (last && last[1] != null && m.joined_at - last[1] <= 60) last[1] = m.left_at;
+        else acc.push([m.joined_at, m.left_at]);
+        return acc;
+      }, []), active: mem.some((m) => m.char_id === r.id && !m.left_at) };
   });
   const byId = new Map(chars.map((x) => [x.charId, x]));
   for (const r of rolls) {
@@ -754,11 +854,25 @@ async function buildEventTxt(c, room, ev, st) {
     ? { timeZone: tz, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }
     : { timeZone: tz, hour: '2-digit', minute: '2-digit' });
   const end = ev.ended_at || now();
-  const mins = Math.max(1, Math.round((end - ev.started_at) / 60));
+  // події, що перетекли в цю (рекурсивно)
+  const merged = [];
+  let frontier = [ev.id];
+  while (frontier.length) {
+    const rows = await all(c.db, 'SELECT * FROM events WHERE merged_into IN (SELECT value FROM json_each(?))', JSON.stringify(frontier));
+    merged.push(...rows);
+    frontier = rows.map((r) => r.id);
+  }
+  const start = Math.min(ev.started_at, ...merged.map((m) => m.started_at));
+  const mins = Math.max(1, Math.round((end - start) / 60));
   const out = [];
   out.push(L(`DnD Companion — подія «${ev.name}»`));
   out.push(L(`${evTypeName(ev.type)} · кімната «${room.name}» (код ${room.id}) · сесія ${ev.session}`));
-  out.push(L(`Початок: ${fmt(ev.started_at, true)} · кінець: ${fmt(end, true)} · тривалість: ${mins} хв`));
+  out.push(L(`Початок: ${fmt(start, true)} · кінець: ${fmt(end, true)} · тривалість: ${mins} хв`));
+  for (const m of merged.sort((a, b) => a.started_at - b.started_at)) {
+    out.push(L(`Включає подію «${m.name}» (${evTypeName(m.type).toLowerCase()}, з ${fmt(m.started_at)})`));
+  }
+  const part = st.chars.map((x) => (x.spans.length ? `${x.name} (${x.spans.map(([a, b]) => `${fmt(a)}–${fmt(b || end)}`).join(', ')})` : x.name));
+  if (part.length) out.push(L(`Учасники: ${part.join('; ')}`));
   out.push('', L('=== Підсумок по персонажах ==='), L('✓ — успіх, ✗ — провал (позначки майстра)'));
   for (const x of st.chars) {
     const race = x.raceId === 'custom' ? x.raceName : (R.RACES[x.raceId] || {}).name || '';
@@ -798,19 +912,19 @@ async function buildEventTxt(c, room, ev, st) {
   return out.join('\n');
 }
 // Завершити активну подію кімнати й надіслати звіт майстрові
-async function finishEvent(c, room) {
-  const ev = await getEvent(c, room.event_id);
-  if (!ev) return { sent: false };
-  await addLog(c, room, `завершив подію «${ev.name}»`);
+async function finishEvent(c, room, ev) {
+  if (!ev || ev.ended_at) return { sent: false };
+  await addLog(c, room, `завершив подію «${ev.name}»`, undefined, ev.id);
   const ts = now();
   await run(c.db, 'UPDATE events SET ended_at = ? WHERE id = ?', ts, ev.id);
-  await run(c.db, 'UPDATE rooms SET event_id = NULL, version = version + 1 WHERE id = ?', room.id);
+  await run(c.db, 'UPDATE event_members SET left_at = ? WHERE event_id = ? AND left_at IS NULL', ts, ev.id);
+  await run(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', room.id);
+  c.evc = null;
   ev.ended_at = ts;
   const st = await eventStats(c, ev);
   const txt = await buildEventTxt(c, room, ev, st);
   const fname = `podiia_${ev.num}_${ev.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}.txt`;
   const r = await sendDocument(c.env, c.user.id, fname, txt, tr(c.user.lang, `📊 Подія «${ev.name}» завершена`));
-  room.event_id = null;
   return { sent: !!r.ok, name: ev.name };
 }
 
@@ -936,8 +1050,8 @@ const OPS = {
     const room = await getRoom(c, roomId);
     const master = await first(c.db, 'SELECT first_name FROM users WHERE id = ?', room.master_id);
     const base = { id: room.id, name: room.name, session: room.session, version: room.version || 0, maxStartLevel: room.max_start_level || 1, masterName: master ? master.first_name : '' };
-    const ev = await getEvent(c, room.event_id);
-    if (ev && !ev.ended_at) base.event = { id: ev.id, name: ev.name, type: ev.type, startedAt: ev.started_at };
+    const evs = await activeEvents(c, room);
+    const evBrief = (ev) => ({ id: ev.id, name: ev.name, type: ev.type, startedAt: ev.started_at, members: ev.members });
     if (room.master_id === c.user.id) {
       const members = await all(c.db, `SELECT m.user_id, m.joined_at, m.help_req, m.last_roll, u.first_name, u.username FROM members m
         LEFT JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`, room.id);
@@ -953,12 +1067,14 @@ const OPS = {
           lastRoll: helpRequested && m.last_roll ? JSON.parse(m.last_roll) : null };
       });
       const fallen = chars.filter((ch) => !ch.alive).map((ch) => ({ id: ch.id, userId: ch.userId, name: ch.sheet.name, level: ch.sheet.level, classId: ch.sheet.classId }));
-      if (base.event) {
-        // живі підсумки події для майстра + кидки шкоди, які можна позначити як промах
+      // живі підсумки кожної активної події: учасники, кидки (з позначками майстра)
+      base.events = [];
+      for (const ev of evs) {
         const st = await eventStats(c, ev);
-        base.event.chars = st.chars.map((x) => ({ charId: x.charId, name: x.name, dealt: x.dealt, taken: x.taken, heal: x.heal, rolls: x.rolls, misses: x.misses, adj: x.adj, acts: x.acts.length }));
-        base.event.rolls = st.rolls.slice(-40).reverse()
-          .map((r) => ({ id: r.id, charId: r.charId, kind: r.kind, label: r.label, total: r.total, mark: r.mark, crit: r.crit, ts: r.ts, name: (st.chars.find((x) => x.charId === r.charId) || {}).name || '' }));
+        base.events.push({ ...evBrief(ev),
+          chars: st.chars.filter((x) => x.active).map((x) => ({ charId: x.charId, name: x.name, dealt: x.dealt, taken: x.taken, heal: x.heal, rolls: x.rolls, misses: x.misses, adj: x.adj, acts: x.acts.length })),
+          rolls: st.rolls.slice(-40).reverse()
+            .map((r) => ({ id: r.id, charId: r.charId, kind: r.kind, label: r.label, total: r.total, mark: r.mark, crit: r.crit, ts: r.ts, name: (st.chars.find((x) => x.charId === r.charId) || {}).name || '' })) });
       }
       return { role: 'master', room: base, players, fallen, maxPlayers: MAX_PLAYERS };
     }
@@ -966,6 +1082,9 @@ const OPS = {
     if (!mem) fail('Ти не в цій кімнаті. Приєднайся за кодом.');
     const row = await first(c.db, 'SELECT * FROM characters WHERE room_id = ? AND user_id = ? AND alive = 1 ORDER BY id DESC LIMIT 1', room.id, c.user.id);
     const character = row ? await fullChar(c, parseChar(row)) : null;
+    // плашку «Йде подія» бачать лише учасники
+    const myEv = character && evs.find((e) => e.members.includes(character.id));
+    if (myEv) base.event = evBrief(myEv);
     const mates = (await all(c.db, `SELECT ch.id, ch.sheet, u.first_name FROM characters ch JOIN members m ON m.room_id = ch.room_id AND m.user_id = ch.user_id
       LEFT JOIN users u ON u.id = ch.user_id WHERE ch.room_id = ? AND ch.alive = 1 AND ch.user_id != ?`, room.id, c.user.id))
       .map((r) => ({ charId: r.id, name: JSON.parse(r.sheet).name, playerName: r.first_name }));
@@ -1013,26 +1132,53 @@ const OPS = {
     await run(c.db, 'DELETE FROM master_items WHERE id = ? AND owner_id = ?', int(id, 0, 1e12, 0), c.user.id);
   },
 
-  // ---------- Події майстра ----------
-  async startEvent(c, { roomId, name, type }) {
+  // ---------- Події майстра (можуть іти паралельно; персонаж — в одній події) ----------
+  async startEvent(c, { roomId, name, type, charIds }) {
     const room = await requireMaster(c, roomId);
-    if (room.event_id && await getEvent(c, room.event_id)) fail('Подія вже триває — спершу заверши її');
+    await activeEvents(c, room);
+    const raw = Array.isArray(charIds) ? charIds : [];
+    if (raw.length > 50) fail('Забагато учасників');
+    const alive = new Set((await all(c.db, 'SELECT id FROM characters WHERE room_id = ? AND alive = 1', room.id)).map((r) => r.id));
+    const ids = raw.map((x) => int(x, 0, 1e12, 0)).filter((x) => alive.has(x));
+    if (!ids.length) fail('Обери хоча б одного учасника');
     const t = R.EVENT_TYPES[type] ? type : 'other';
     const cnt = await first(c.db, 'SELECT COUNT(*) AS n FROM events WHERE room_id = ?', room.id);
     const num = (cnt ? cnt.n : 0) + 1;
     const nm = str(name, 80).trim() || `Подія ${num}`;
     const r = await run(c.db, 'INSERT INTO events (room_id, num, session, name, type, started_at) VALUES (?, ?, ?, ?, ?, ?)', room.id, num, room.session, nm, t, now());
-    const id = r.meta && r.meta.last_row_id;
-    await run(c.db, 'UPDATE rooms SET event_id = ? WHERE id = ?', id, room.id);
-    room.event_id = id;
-    await addLog(c, room, `почав подію «${nm}» (${evTypeName(t).toLowerCase()})`);
-    return { id, name: nm };
+    const ev = await getEvent(c, r.meta && r.meta.last_row_id);
+    await addLog(c, room, `почав подію «${nm}» (${evTypeName(t).toLowerCase()})`, undefined, ev.id);
+    const res = await setEventMembers(c, room, ev, ids);
+    return { id: ev.id, name: nm, merged: res.merged };
   },
 
-  async endEvent(c, { roomId }) {
+  // Змінити склад події (перевести з іншої, додати, прибрати)
+  async eventMembers(c, { roomId, eventId, charIds }) {
     const room = await requireMaster(c, roomId);
-    if (!room.event_id) fail('Зараз немає активної події');
-    const r = await finishEvent(c, room);
+    await activeEvents(c, room);
+    const ev = await getEvent(c, int(eventId, 0, 1e12, 0));
+    if (!ev || ev.room_id !== room.id || ev.ended_at) fail('Подію не знайдено або вже завершено');
+    const res = await setEventMembers(c, room, ev, Array.isArray(charIds) ? charIds.slice(0, 50) : []);
+    return { merged: res.merged, finished: !!res.finished, sent: res.finished ? res.finished.sent : undefined };
+  },
+
+  // Об'єднати подію з іншою: учасники й записи переходять туди, звіт буде один
+  async mergeEvent(c, { roomId, eventId, intoId }) {
+    const room = await requireMaster(c, roomId);
+    await activeEvents(c, room);
+    const from = await getEvent(c, int(eventId, 0, 1e12, 0));
+    const into = await getEvent(c, int(intoId, 0, 1e12, 0));
+    if (!from || !into || from.id === into.id || from.room_id !== room.id || into.room_id !== room.id || from.ended_at || into.ended_at) fail('Подію не знайдено або вже завершено');
+    await mergeEventInto(c, room, from, into);
+    return { ok: true, name: into.name };
+  },
+
+  async endEvent(c, { roomId, eventId }) {
+    const room = await requireMaster(c, roomId);
+    const evs = await activeEvents(c, room);
+    const ev = eventId == null && evs.length === 1 ? evs[0] : evs.find((e) => e.id === int(eventId, 0, 1e12, 0));
+    if (!ev) fail('Зараз немає активної події');
+    const r = await finishEvent(c, room, ev);
     if (!r.sent) fail('Подію завершено, але файл не надіслано — відкрий чат із ботом і натисни «Почати» (Start)');
     return r;
   },
@@ -1041,10 +1187,11 @@ const OPS = {
   // mark: 0 — зняти позначку, 1 — провал/промах, 2 — успіх/влучання (miss — старий параметр: true = 1)
   async eventDamage(c, { roomId, charId, delta, rollId, miss, mark, note }) {
     const room = await requireMaster(c, roomId);
-    if (!room.event_id) fail('Зараз немає активної події');
+    const evs = await activeEvents(c, room);
+    if (!evs.length) fail('Зараз немає активної події');
     if (rollId != null) {
-      const r = await first(c.db, 'SELECT * FROM dice_rolls WHERE id = ? AND event_id = ?', int(rollId, 0, 1e12, 0), room.event_id);
-      if (!r) fail('Кидок не знайдено');
+      const r = await first(c.db, 'SELECT * FROM dice_rolls WHERE id = ? AND room_id = ?', int(rollId, 0, 1e12, 0), room.id);
+      if (!r || !evs.some((e) => e.id === r.event_id)) fail('Кидок не знайдено');
       const d = JSON.parse(r.data);
       let m = mark == null ? (miss ? 1 : 0) : int(mark, 0, 2, 0);
       if (d.kind === 'damage' && m === 2) m = 0;
@@ -1053,16 +1200,18 @@ const OPS = {
       const what = d.kind === 'damage'
         ? (m ? 'позначив промах' : 'зняв позначку промаху')
         : (m === 2 ? 'позначив успіх' : m === 1 ? 'позначив провал' : 'зняв позначку');
-      await addLog(c, room, `${what}: ${ch ? JSON.parse(ch.sheet).name : ''} — ${d.label} (${d.total})`);
+      await addLog(c, room, `${what}: ${ch ? JSON.parse(ch.sheet).name : ''} — ${d.label} (${d.total})`, undefined, r.event_id);
       return { ok: true };
     }
     const ch = await first(c.db, 'SELECT * FROM characters WHERE id = ? AND room_id = ?', int(charId, 0, 1e12, 0), room.id);
     if (!ch) fail('Персонажа не знайдено');
+    const evId = await charEventId(c, ch.id);
+    if (!evId) fail('Персонаж не бере участі в жодній події');
     const n = int(delta, -9999, 9999, 0);
     if (!n) fail('Вкажи кількість');
     const nt = str(note, 80).trim();
-    await run(c.db, 'INSERT INTO event_acts (event_id, char_id, ts, kind, value, data) VALUES (?, ?, ?, ?, ?, ?)', room.event_id, ch.id, now(), 'adj', n, nt ? JSON.stringify({ note: nt }) : null);
-    await addLog(c, room, `поправка шкоди ${JSON.parse(ch.sheet).name}: ${R.fmtMod(n)}${nt ? ` (${nt})` : ''}`);
+    await run(c.db, 'INSERT INTO event_acts (event_id, char_id, ts, kind, value, data) VALUES (?, ?, ?, ?, ?, ?)', evId, ch.id, now(), 'adj', n, nt ? JSON.stringify({ note: nt }) : null);
+    await addLog(c, room, `поправка шкоди ${JSON.parse(ch.sheet).name}: ${R.fmtMod(n)}${nt ? ` (${nt})` : ''}`, undefined, evId);
     return { ok: true };
   },
 
@@ -1105,7 +1254,7 @@ const OPS = {
     const crit = d20 && d20.n === 1 && totalDice === 1 ? (d20.k[0] === 20 ? 20 : d20.k[0] === 1 ? 1 : 0) : 0;
     const data = { label, kind: kind || 'free', groups, mod: m, mode: adv, total, crit };
     const ts = now();
-    const r = await run(c.db, 'INSERT INTO dice_rolls (room_id, char_id, user_id, ts, data, event_id) VALUES (?, ?, ?, ?, ?, ?)', room.id, ch.id, c.user.id, ts, JSON.stringify(data), room.event_id || null);
+    const r = await run(c.db, 'INSERT INTO dice_rolls (room_id, char_id, user_id, ts, data, event_id) VALUES (?, ?, ?, ?, ?, ?)', room.id, ch.id, c.user.id, ts, JSON.stringify(data), (await charEventId(c, ch.id)) || null);
     // тримаємо лише останні кидки персонажа
     await run(c.db, `DELETE FROM dice_rolls WHERE char_id = ? AND event_id IS NULL AND id NOT IN (SELECT id FROM dice_rolls WHERE char_id = ? ORDER BY id DESC LIMIT 50)`, ch.id, ch.id);
     const expr = groups.map((g) => {
@@ -1250,7 +1399,7 @@ const OPS = {
     const diff = describeSheetDiff(old, s);
     if (!diff.length) return { ok: true };
     await saveSheet(c, ch);
-    if (room.event_id) {
+    if (await charEventId(c, ch.id)) {
       // для звіту події: отримана шкода, лікування, падіння до 0 ХП, рятівні від смерті, комірки, ресурси
       const hpOld = old.hp.cur + old.hp.temp;
       const hpNew = s.hp.cur + s.hp.temp;
@@ -1663,7 +1812,7 @@ const OPS = {
   async endSession(c, { roomId }) {
     const room = await requireMaster(c, roomId);
     // активна подія завершується разом із сесією (звіт приходить окремим файлом)
-    if (room.event_id) await finishEvent(c, room);
+    for (const ev of await activeEvents(c, room)) await finishEvent(c, room, ev);
     await addLog(c, room, `завершив сесію ${room.session}`);
     const txt = await buildLogTxt(c, room, room.session);
     const fname = `${room.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}_sesiia_${room.session}.txt`;
