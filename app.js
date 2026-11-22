@@ -649,6 +649,7 @@ function masterRoomHtml(d) {
   ${S.mtab === 'dice' ? rollFeed(d) : `${eventPanel(d)}
   <div class="btns"><button class="btn" data-act="openLog">📜 Журнал</button><button class="btn" data-act="endSession">🏁 Завершити сесію</button></div>
   <div class="btns"><button class="btn sm" data-act="restAll" data-kind="short">☕ Короткий відпочинок для всіх</button><button class="btn sm" data-act="restAll" data-kind="long">🌙 Довгий для всіх</button></div>
+  ${roomChars(d).length ? `<div class="btns grant-all"><button class="btn sm" data-act="xpAllModal">⭐ Видати досвід усім</button><button class="btn sm" data-act="lvlAllModal">⬆️ Видати рівень усім</button></div>` : ''}
   <h3 class="sec">Гравці</h3>
   ${players.length ? players.map(playerCard).join('') : empty('🕯️', 'Поки нікого. Надішли гравцям запрошення.')}
   ${d.fallen.length ? `<details class="mt"><summary>☠ Загиблі персонажі (${d.fallen.length})</summary>
@@ -1807,7 +1808,37 @@ function fxDurEditor(m, lvl) {
     ${m.unit !== 'perm' ? `<div class="row fld fx-dur"><span class="grow">Скільки</span><div class="stepper"><button data-act="fxN" data-d="-1">−</button>
       <input type="number" inputmode="numeric" class="fx-n-in" data-bind="modal.n" data-num min="1" max="999" value="${m.n}"><button data-act="fxN" data-d="1">+</button></div></div>` : ''}`;
 }
+// Галочки персонажів для «Видати досвід / рівень усім»; info(ch) — що зміниться
+function grantPicks(m, info, disabled) {
+  return `<div class="ev-picks">${roomChars(S.room).map((ch) => {
+    const off = disabled && disabled(ch);
+    return `<label class="row ev-pick${off ? ' off' : ''}"><input type="checkbox" data-arr="modal.chars" data-v="${ch.id}" ${m.chars.includes(String(ch.id)) && !off ? 'checked' : ''}${off ? ' disabled' : ''}>
+      <span class="grow" data-notr>${esc(ch.sheet.name)}</span><small class="hint">${info(ch)}</small></label>`;
+  }).join('')}</div>`;
+}
 const MODALS = {
+  xpAll: (m) => {
+    const n = Math.trunc(num(m.amount));
+    return `${hdr('⭐ Досвід усім', 'Кожен обраний персонаж отримає однакову кількість')}
+    <label class="fld"><span>Кожному (можна від’ємне)</span><input type="number" inputmode="numeric" data-bind="modal.amount" data-rerender="modal" value="${esc(m.amount)}"></label>
+    <div class="chips">${[25, 50, 100, 200, 300, 500, 1000].map((x) => `<button class="chip" data-act="xpAllQuick" data-n="${x}">+${x}</button>`).join('')}</div>
+    <div class="fld mt"><span>Кому</span></div>
+    ${grantPicks(m, (ch) => {
+      const xp = ch.sheet.xp || 0;
+      const to = Math.max(0, xp + n);
+      const lv = R.levelForXp(to);
+      return `${xp}${n ? ` → ${to}` : ''}${n && lv > Math.max(ch.sheet.level, ch.sheet.targetLevel) ? ` · ⬆️ ${lv} рів.` : ''}`;
+    })}
+    <p class="hint">Коли досвід досягне порогу 5e, гравцю відкриється підвищення рівня.</p>
+    <button class="btn primary block mt" data-act="xpAllSave">Нарахувати</button>`;
+  },
+  lvlAll: (m) => `${hdr('⬆️ Рівень усім', '+1 рівень кожному обраному — від його поточного')}
+    ${grantPicks(m, (ch) => {
+      const cur = Math.max(ch.sheet.level, ch.sheet.targetLevel);
+      return cur >= 20 ? '20 рів. — максимум' : `${cur} → ${cur + 1} рів. · ⭐ ${Math.max(ch.sheet.xp || 0, R.XP_TABLE[cur])}`;
+    }, (ch) => Math.max(ch.sheet.level, ch.sheet.targetLevel) >= 20)}
+    <p class="hint">Досвід підтягнеться до порогу нового рівня. Гравці пройдуть підвищення за правилами 5e.</p>
+    <button class="btn primary block mt" data-act="lvlAllSave">Дозволити підвищення</button>`,
   // Накласти статус на персонажа: стандартні ефекти 5e або свої з каталогу
   fxAdd: (m) => {
     const ch = currentChar();
@@ -3009,6 +3040,23 @@ const ACT = {
     if (r) closeModal();
   },
   xpQuick: ({ n }) => { S.modal.amount = String(num(S.modal.amount) + Number(n)); renderModal(); },
+  xpAllModal: () => openModal({ type: 'xpAll', amount: '', chars: roomChars(S.room).map((ch) => String(ch.id)) }),
+  xpAllQuick: ({ n }) => { S.modal.amount = String(Math.trunc(num(S.modal.amount)) + Number(n)); renderModal(); },
+  xpAllSave: async () => {
+    const m = S.modal;
+    const n = Math.trunc(num(m.amount));
+    if (!n) { toast('Вкажи кількість досвіду', true); return; }
+    if (!m.chars.length) { toast('Обери хоча б одного персонажа', true); return; }
+    const r = await reloadAfter(() => api('masterXPAll', { roomId: roomId(), charIds: m.chars.map(Number), amount: n }), `⭐ ${n > 0 ? '+' : ''}${n} досвіду кожному`);
+    if (r) closeModal();
+  },
+  lvlAllModal: () => openModal({ type: 'lvlAll', chars: roomChars(S.room).filter((ch) => Math.max(ch.sheet.level, ch.sheet.targetLevel) < 20).map((ch) => String(ch.id)) }),
+  lvlAllSave: async () => {
+    const m = S.modal;
+    if (!m.chars.length) { toast('Обери хоча б одного персонажа', true); return; }
+    const r = await reloadAfter(() => api('masterGrantLevelAll', { roomId: roomId(), charIds: m.chars.map(Number) }), '⬆️ Підвищення рівня дозволено');
+    if (r) closeModal();
+  },
   xpSave: async () => {
     const ch = currentChar();
     const n = Math.trunc(num(S.modal.amount));
@@ -3020,7 +3068,7 @@ const ACT = {
     const ch = currentChar();
     const s = ch.sheet;
     const target = Math.max(s.targetLevel, s.level) + 1;
-    if (!(await confirmBox(`Дозволити ${s.name} підвищення до ${target} рівня? Гравець пройде підвищення за правилами 5e.`))) return;
+    if (!(await confirmBox(`Дозволити ${s.name} підвищення до ${target} рівня? Досвід підтягнеться до порогу рівня (${Math.max(s.xp || 0, R.XP_TABLE[target - 1])}). Гравець пройде підвищення за правилами 5e.`))) return;
     await reloadAfter(() => api('masterGrantLevel', { charId: ch.id }), `⬆️ Дозволено ${target} рівень`);
   },
   charMore: () => openModal({ type: 'charMore' }),

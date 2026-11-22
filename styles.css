@@ -499,3 +499,7 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .fx-icon-in { width: 64px; text-align: center; font-size: 18px; padding: 6px; }
 .cat-new { margin-top: 8px; }
 .cat-kind { position: static; margin-top: 10px; }
+/* видати досвід / рівень усім */
+.grant-all .btn { flex: 1; }
+.ev-pick:has(input:not(:checked)) small { opacity: .45; }
+.ev-pick.off { opacity: .5; }

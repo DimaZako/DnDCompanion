@@ -1101,6 +1101,42 @@ async function roomSummaries(c, room) {
   return (await all(c.db, 'SELECT * FROM session_summaries WHERE room_id = ? ORDER BY session', room.id)).map((r) => ({ id: r.id, session: r.session, ts: r.ts, data: JSON.parse(r.data) }));
 }
 
+// ---------- Досвід і рівні від майстра ----------
+async function giveXp(c, ch, n) {
+  const s = ch.sheet;
+  s.xp = Math.max(0, (s.xp || 0) + n);
+  const before = s.targetLevel;
+  const byXp = R.levelForXp(s.xp);
+  if (byXp > s.targetLevel) s.targetLevel = Math.min(20, byXp);
+  await saveSheet(c, ch);
+  let msg = `⭐ Майстер нарахував ${n > 0 ? '+' : ''}${n} досвіду. Всього: ${s.xp}.`;
+  if (s.targetLevel > before && s.targetLevel > s.level) msg += `\n⬆️ Доступне підвищення до ${s.targetLevel} рівня! Відкрий застосунок.`;
+  notify(c, ch.userId, msg);
+}
+// дозвіл на наступний рівень; досвід підтягується до порогу цього рівня (смужка досвіду не показує «1 / 300»)
+async function giveLevel(c, ch) {
+  const s = ch.sheet;
+  const cur = Math.max(s.targetLevel, s.level);
+  if (cur >= 20) return false;
+  s.targetLevel = cur + 1;
+  s.xp = Math.max(s.xp || 0, R.XP_TABLE[s.targetLevel - 1] || 0);
+  await saveSheet(c, ch);
+  notify(c, ch.userId, `⬆️ Майстер дозволив підвищити рівень ${s.name} до ${s.targetLevel}! Відкрий застосунок, щоб пройти підвищення.`);
+  return true;
+}
+// обрані майстром живі персонажі його кімнати
+async function masterPicks(c, roomId, charIds) {
+  const room = await requireMaster(c, roomId);
+  const ids = [...new Set((Array.isArray(charIds) ? charIds : []).slice(0, 50).map((x) => int(x, 0, 1e12, 0)))];
+  const chars = [];
+  for (const id of ids) {
+    const row = await first(c.db, 'SELECT * FROM characters WHERE id = ? AND room_id = ? AND alive = 1', id, room.id);
+    if (row) chars.push(parseChar(row));
+  }
+  if (!chars.length) fail('Обери хоча б одного персонажа');
+  return { room, chars };
+}
+
 const OPS = {
   async me(c) {
     const u = c.user;
@@ -1995,28 +2031,35 @@ const OPS = {
     const { ch, room } = await charAccess(c, charId, { master: true });
     const n = int(amount, -1e7, 1e7, 0);
     if (!n) fail('Вкажи кількість досвіду');
-    const s = ch.sheet;
-    s.xp = Math.max(0, (s.xp || 0) + n);
-    const byXp = R.levelForXp(s.xp);
-    const before = s.targetLevel;
-    if (byXp > s.targetLevel) s.targetLevel = Math.min(20, byXp);
-    await saveSheet(c, ch);
-    await addLog(c, room, `${n > 0 ? '+' : ''}${n} досвіду → ${s.name} (всього ${s.xp})`);
-    let msg = `⭐ Майстер нарахував ${n > 0 ? '+' : ''}${n} досвіду. Всього: ${s.xp}.`;
-    if (s.targetLevel > before && s.targetLevel > s.level) msg += `\n⬆️ Доступне підвищення до ${s.targetLevel} рівня! Відкрий застосунок.`;
-    notify(c, ch.userId, msg);
-    return { xp: s.xp, targetLevel: s.targetLevel };
+    await giveXp(c, ch, n);
+    await addLog(c, room, `${n > 0 ? '+' : ''}${n} досвіду → ${ch.sheet.name} (всього ${ch.sheet.xp})`);
+    return { xp: ch.sheet.xp, targetLevel: ch.sheet.targetLevel };
   },
 
   async masterGrantLevel(c, { charId }) {
     const { ch, room } = await charAccess(c, charId, { master: true });
-    const s = ch.sheet;
-    if (Math.max(s.targetLevel, s.level) >= 20) fail('Вже 20 рівень');
-    s.targetLevel = Math.max(s.targetLevel, s.level) + 1;
-    await saveSheet(c, ch);
-    await addLog(c, room, `дозволив ${s.name} підвищення до ${s.targetLevel} рівня`);
-    notify(c, ch.userId, `⬆️ Майстер дозволив підвищити рівень ${s.name} до ${s.targetLevel}! Відкрий застосунок, щоб пройти підвищення.`);
-    return { targetLevel: s.targetLevel };
+    if (!(await giveLevel(c, ch))) fail('Вже 20 рівень');
+    await addLog(c, room, `дозволив ${ch.sheet.name} підвищення до ${ch.sheet.targetLevel} рівня`);
+    return { targetLevel: ch.sheet.targetLevel, xp: ch.sheet.xp };
+  },
+
+  // Досвід кожному обраному персонажу однаково
+  async masterXPAll(c, { roomId, charIds, amount }) {
+    const n = int(amount, -1e7, 1e7, 0);
+    if (!n) fail('Вкажи кількість досвіду');
+    const { room, chars } = await masterPicks(c, roomId, charIds);
+    for (const ch of chars) await giveXp(c, ch, n);
+    await addLog(c, room, `${n > 0 ? '+' : ''}${n} досвіду кожному: ${chars.map((ch) => ch.sheet.name).join(', ')}`);
+    return { chars: chars.map((ch) => ({ id: ch.id, xp: ch.sheet.xp, targetLevel: ch.sheet.targetLevel })) };
+  },
+  // +1 рівень кожному обраному (від свого поточного); досвід підтягується до порогу нового рівня
+  async masterGrantLevelAll(c, { roomId, charIds }) {
+    const { room, chars } = await masterPicks(c, roomId, charIds);
+    const done = [];
+    for (const ch of chars) if (await giveLevel(c, ch)) done.push(ch);
+    if (!done.length) fail('Усі обрані персонажі вже 20 рівня');
+    await addLog(c, room, `дозволив підвищення рівня: ${done.map((ch) => `${ch.sheet.name} → ${ch.sheet.targetLevel}`).join(', ')}`);
+    return { chars: done.map((ch) => ({ id: ch.id, xp: ch.sheet.xp, targetLevel: ch.sheet.targetLevel })), skipped: chars.length - done.length };
   },
 
   async masterSetAlive(c, { charId, alive }) {
