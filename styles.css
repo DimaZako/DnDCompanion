@@ -441,3 +441,8 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .ev-pick:last-child { border-bottom: 0; }
 .ev-pick input { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
 .ev-pick small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+
+/* власне вікно підтвердження (коли текст задовгий для вікна Telegram) */
+.cbox-wrap { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, .55); }
+.cbox { width: 100%; max-width: 360px; background: var(--card); border-radius: 16px; padding: 18px 16px 14px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
+.cbox p { margin: 0 0 14px; font-size: 15px; line-height: 1.45; white-space: pre-wrap; }

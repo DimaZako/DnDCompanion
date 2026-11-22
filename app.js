@@ -144,11 +144,31 @@ function toast(msg, err = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { $toast.className = err ? 'err' : ''; }, err ? 4200 : 2400);
 }
+// Підтвердження. Telegram показує текст до 256 символів (довший — помилка WebAppPopupParamInvalid),
+// тож довгий текст або збій вікна Telegram — власне вікно застосунку
 function confirmBox(msg) {
+  msg = t(msg);
+  if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast('6.2') && msg.length <= 256) {
+    return new Promise((res) => {
+      try { tg.showConfirm(msg, (ok) => res(!!ok)); } catch (e) { inAppConfirm(msg).then(res); }
+    });
+  }
+  return tg && tg.initData ? inAppConfirm(msg) : Promise.resolve(window.confirm(msg));
+}
+function inAppConfirm(msg) {
   return new Promise((res) => {
-    msg = t(msg);
-    if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast('6.2')) tg.showConfirm(msg, (ok) => res(!!ok));
-    else res(window.confirm(msg));
+    const w = document.createElement('div');
+    w.className = 'cbox-wrap';
+    w.innerHTML = `<div class="cbox" role="dialog"><p data-notr>${esc(msg)}</p>
+      <div class="btns"><button class="btn" data-c="0" data-notr>${esc(t('Скасувати'))}</button><button class="btn primary" data-c="1">OK</button></div></div>`;
+    w.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-c]');
+      if (!b && e.target !== w) return;
+      e.stopPropagation();
+      w.remove();
+      res(!!b && b.dataset.c === '1');
+    });
+    document.body.appendChild(w);
   });
 }
 let busyN = 0;
@@ -2273,7 +2293,7 @@ const ACT = {
   exportLog: async () => { await run(() => api('exportLog', { roomId: roomId(), all: S.logAll }), '📥 Файл надіслано в чат із ботом'); },
   endSession: async () => {
     const n = S.room.room.session;
-    if (!(await confirmBox(`Завершити сесію ${n}? Активні події завершаться. Усе стиснеться до підсумку (рівень, досвід, гроші, предмети, ХП, натхнення, події) — він прийде тобі файлом у чат із ботом, гравці отримають сповіщення. Детальний журнал і кидки сесії буде видалено: якщо він потрібен, спершу надішли його з «📜 Журнал».`))) return;
+    if (!(await confirmBox(`Завершити сесію ${n}? Події закриються, усе стиснеться до підсумку — він прийде файлом у чат. Детальний журнал і кидки сесії буде видалено (спершу можна надіслати їх із «📜 Журнал»).`))) return;
     const r = await run(() => api('endSession', { roomId: roomId() }));
     if (r) {
       toast(r.sent ? `🏁 Сесію ${n} завершено. Підсумок надіслано в чат.` : `Сесію завершено, але файл не надіслано — натисни Start у чаті з ботом. Підсумок збережено в «📜 Журнал → Увесь журнал».`, !r.sent);

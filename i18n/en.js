@@ -4095,4 +4095,5 @@ export default {"Сила":"Strength",
 "Натхнення: {0} → {1}":"Inspiration: {0} → {1}",
 "Натхнення: {0}":"Inspiration: {0}",
 "=== Події сесії ===":"=== Session events ===",
-"📜 Підсумок сесії {0} «{1}»":"📜 Session {0} summary “{1}”"};
+"📜 Підсумок сесії {0} «{1}»":"📜 Session {0} summary “{1}”",
+"Завершити сесію {0}? Події закриються, усе стиснеться до підсумку — він прийде файлом у чат. Детальний журнал і кидки сесії буде видалено (спершу можна надіслати їх із «📜 Журнал»).":"End session {0}? Events will close and everything is condensed into a summary sent as a file to the chat. The session’s detailed log and rolls will be deleted (you can send them first from “📜 Log”)."};
