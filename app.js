@@ -2,6 +2,7 @@
 import * as R from './shared/rules.js';
 import { CATALOG, BASE_WEAPONS } from './data/items.js';
 import { featureDetails, resourceDetails } from './shared/details.js';
+import { MONSTERS, MON_TRAITS, MON_TYPES, MON_SIZES, CR_XP, crNum, monInit } from './shared/monsters.js';
 import { ABBR, ABBR_RE, diceInfo, SKILL_INFO } from './shared/glossary.js';
 import { compile, translate, hasCyr, LANGS, LOCALES, normLang, langFromTg, ABBR_LOC } from './shared/i18n.js';
 
@@ -15,7 +16,7 @@ const $busy = document.getElementById('busy');
 
 const S = {
   me: null, nav: [], room: null, modal: null, tab: 'sheet', mtab: 'room', rollLimit: 50, rollFilter: 0, seenRoll: {},
-  wiz: null, newRoom: { name: '', pick: false, max: 5 }, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, myEffects: null, log: null, logAll: false, bootError: null,
+  wiz: null, newRoom: { name: '', pick: false, max: 5 }, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, myEffects: null, myMonsters: null, log: null, logAll: false, bootError: null,
 };
 
 // ================= Допоміжні =================
@@ -506,8 +507,133 @@ function eventBanner(d) {
   const ev = d.room && d.room.event;
   if (!ev) return '';
   const [tn, ti] = evType(ev.type);
-  return `<div class="ev-banner">${ti} <span>Йде подія:</span> <b>${esc(ev.name)}</b> <small>· ${tn}</small></div>`;
+  const cb = ev.combat;
+  if (!cb) return `<div class="ev-banner">${ti} <span>Йде подія:</span> <b>${esc(ev.name)}</b> <small>· ${tn}</small></div>`;
+  // бій: чий зараз хід (або кинути ініціативу); дотик — вкладка бою
+  const me = d.character && cb.list.find((x) => x.charId === d.character.id);
+  const cur = cb.list.find((x) => x.id === cb.turnId);
+  const mine = !!(cb.round && me && cur && cur.id === me.id);
+  let st;
+  if (!cb.round) {
+    st = me && me.init == null ? '<button class="btn sm primary" data-act="cbRollInit">🎲 Кинути ініціативу</button>'
+      : `<span>Ініціатива: ${me ? me.init : '—'} · чекаємо початку бою</span>`;
+  } else st = mine ? '<b class="cb-my">🎯 Твій хід!</b>' : `<span>Зараз хід:</span> <b data-notr>${esc(cur ? cbLabel(cur) : '—')}</b>`;
+  return `<div class="ev-banner cb-banner${mine ? ' my' : ''}" data-act="openCombat"><div class="row"><span class="grow">${ti} <b data-notr>${esc(ev.name)}</b>${cb.round ? ` <small>· Раунд ${cb.round}</small>` : ''}</span><span class="chev">›</span></div>
+    <div class="cb-st">${st}</div></div>`;
 }
+const CB_ACTS = [['dash', '🏃 Ривок'], ['dodge', '🛡️ Ухилення'], ['disengage', '↩️ Відхід'], ['help', '🤝 Допомога'], ['hide', '🫥 Сховатися'], ['ready', '⏳ Підготовка'], ['search', '🔎 Пошук'], ['move', '👣 Переміщення']];
+// закляття, які персонаж може творити зараз (підготовлені / відомі)
+function cbSpells(ch) {
+  const s = ch.sheet;
+  const plan = R.spellPlan(s);
+  const prepCaster = plan.prep && plan.prep.from === 'list';
+  return [
+    ...plan.always.map((x) => ({ name: R.SPELLS[x.sid].name, level: R.SPELLS[x.sid].level })),
+    ...(s.spell.spells || []).filter((x) => x.level === 0 || !plan.prep || x.prepared || prepCaster).map((x) => ({ name: x.name, level: x.level })),
+  ].sort((a, b) => a.level - b.level || t(a.name).localeCompare(t(b.name), LOCALES[LANG]));
+}
+// Вкладка бою гравця: черговість, стан ворогів, дії у свій хід
+function combatTab(ch, dv) {
+  const ev = S.room.room.event;
+  const cb = ev.combat;
+  const me = cb.list.find((x) => x.charId === ch.id);
+  const cur = cb.list.find((x) => x.id === cb.turnId);
+  const mine = !!(cb.round && me && cur && cur.id === me.id);
+  let h = '';
+  if (me && me.init == null) {
+    const fr = R.effectRoll(ch.effects, 'init');
+    h += `<div class="card cb-roll"><b>🎲 Кинь ініціативу</b><p class="hint">к20 ${fm(dv.init)}${fr.mode ? ` · ${fr.mode === 'adv' ? 'з перевагою' : 'з перешкодою'}` : ''}</p>${fxHints(ch, 'init')}
+      <button class="btn primary block" data-act="cbRollInit">🎲 Кинути ініціативу</button></div>`;
+  }
+  h += `<div class="card cb-card"><div class="row cb-head"><b class="grow">⚔️ <span data-notr>${esc(ev.name)}</span></b><span class="hint">${cb.round ? `Раунд ${cb.round}` : 'Збір ініціативи'}</span></div>
+    ${cb.list.map((x) => {
+    const turn = cb.turnId === x.id;
+    const dead = x.kind === 'npc' && x.state === 'dead';
+    const right = x.kind === 'pc' ? `<small class="cb-pchp" data-notr>${esc(abLoc('ХП'))} ${x.hp}/${x.hpMax}</small>` : `<span class="cb-state st-${x.state}">${MON_STATE_N[x.state] || ''}</span>`;
+    return `<div class="cb-row ro${turn ? ' on' : ''}${dead ? ' dead' : ''}${me && x.id === me.id ? ' me' : ''}"><span class="cb-init ro">${x.init == null ? '⏳' : x.init}</span>
+      <span class="cb-ic">${esc(cbIcon(x))}</span><span class="grow cb-nm"><span data-notr>${esc(cbLabel(x))}</span>${me && x.id === me.id ? ' <small class="hint">(ти)</small>' : ''}</span>${right}</div>`;
+  }).join('')}</div>`;
+  if (mine) {
+    h += `<div class="card cb-acts"><b class="cb-my">🎯 Твій хід — що робиш?</b>
+      <div class="cb-grid"><button class="btn" data-act="cbActModal" data-k="attack">⚔️ Атака</button><button class="btn" data-act="cbActModal" data-k="spell">✨ Закляття</button>
+      <button class="btn" data-act="cbActModal" data-k="item">🧪 Предмет</button><button class="btn" data-act="cbActModal" data-k="std">🏃 Інші дії</button></div>
+      <button class="btn primary block mt" data-act="cbEndTurn">✅ Завершити хід</button>
+      <p class="hint">Дії записуються в хроніку бою, кубики — у вкладці 🎲.</p></div>`;
+  } else if (cb.round) h += `<p class="hint center">Зараз хід: <b data-notr>${esc(cur ? cbLabel(cur) : '—')}</b>. Дії з’являться, коли настане твоя черга.</p>`;
+  else if (me && me.init != null) h += '<p class="hint center">Чекаємо, поки майстер почне бій.</p>';
+  return h;
+}
+// ---------- Бестіарій ----------
+const LI = () => ({ uk: 0, ru: 1, en: 2 }[LANG] || 0);
+const ml = (x) => (Array.isArray(x) ? x[LI()] || x[0] : x || '');
+const diceL = (x) => (LANG === 'en' ? String(x).replace(/к/g, 'd') : String(x));
+const MON_ICON = { humanoid: '🧑', beast: '🐺', undead: '💀', monstrosity: '👹', dragon: '🐉', giant: '🗿', fiend: '😈', elemental: '🌪️',
+  construct: '🤖', aberration: '🐙', fey: '🧚', ooze: '🟢', plant: '🌿', celestial: '👼' };
+const AB6 = ['СИЛ', 'СПР', 'СТА', 'ІНТ', 'МДР', 'ХАР'];
+const ABK = { str: 0, dex: 1, con: 2, int: 3, wis: 4, cha: 5 };
+const CR_LIST = ['0', '1/8', '1/4', '1/2', ...Array.from({ length: 24 }, (_, i) => String(i + 1)), '30'];
+const SPEED_N = { f: 'політ', s: 'плавання', c: 'лазіння', b: 'риття' };
+const AREA_N = { cone: 'конус', line: 'лінія', sphere: 'сфера' };
+// ворог за ключем combatant.mon: b:ключ — з бестіарію, m:id — свій (знімок у data)
+const monOf = (mon, data) => {
+  const [k, key] = String(mon || '').split(':');
+  if (k === 'b' && MONSTERS[key]) return { std: true, key, m: MONSTERS[key] };
+  if (data) return { std: false, m: data };
+  const my = k === 'm' && (S.myMonsters || []).find((x) => String(x.id) === key);
+  return my ? { std: false, m: my.data } : null;
+};
+const monName = (o) => (o ? (o.std ? ml(o.m.n) : o.m.name) : '');
+const monIcon = (o) => (o ? (o.std ? MON_ICON[o.m.t] || '👹' : o.m.icon || '👹') : '👹');
+// ім'я учасника бою мовою інтерфейсу: «Гоблін 2»
+const cbLabel = (x) => (x.kind === 'pc' ? x.name : `${monName(monOf(x.mon, x.data)) || x.name}${x.num ? ` ${x.num}` : ''}`);
+function statBlockHtml(o) {
+  const m = o.m;
+  const mods = (m.ab || []).map((v, i) => `<div class="sb-ab"><small>${ab(AB6[i])}</small><b>${v}</b><small>${fm(R.mod(v))}</small></div>`).join('');
+  const head = `<div class="sb-meta" data-notr>${esc([o.std ? ml(MON_SIZES[m.sz]) : '', m.t && MON_TYPES[m.t] ? ml(MON_TYPES[m.t]) : ''].filter(Boolean).join(' · '))}</div>
+    <div class="sb-stats"><span>${ab('КЗ')} <b>${m.ac}</b></span><span>${ab('ХП')} <b>${m.hp}</b>${m.hd ? ` <small data-notr>(${esc(diceL(m.hd))})</small>` : ''}</span>
+      <span>${ab('ПН')} <b>${esc(m.cr)}</b>${CR_XP[m.cr] != null ? ` <small data-notr>(${CR_XP[m.cr]} ${esc(t('досв.'))})</small>` : ''}</span>
+      <span>${ab('Ініціат.')} <b>${fm(o.std ? monInit(m) : R.mod((m.ab || [10, 10])[1]))}</b></span></div>
+    <div class="sb-line" data-notr>👣 ${esc(o.std ? Object.entries(m.sp).filter(([k, v]) => v || k === 'w').map(([k, v]) => (k === 'w' ? `${v} ${t('фт')}` : `${t(SPEED_N[k])} ${v} ${t('фт')}`)).join(', ') : m.sp || '—')}${m.pp ? ` · ${esc(t('пасивна Уважність'))} ${m.pp}` : ''}</div>
+    <div class="sb-abs">${mods}</div>`;
+  if (!o.std) {
+    return `${head}${m.acts ? `<h4 class="sb-h">Дії</h4><div class="sb-txt" data-notr>${esc(m.acts)}</div>` : ''}${m.desc ? `<h4 class="sb-h">Особливості</h4><div class="sb-txt" data-notr>${esc(m.desc)}</div>` : ''}`;
+  }
+  const atk = (a) => {
+    const bits = [];
+    if (a.h || a.d !== '—') bits.push(`${fm(a.h)} ${t('до влучання')}`);
+    if (a.r) bits.push(`${a.r} ${t('фт')}`);
+    if (a.d && a.d !== '—') bits.push(`${diceL(a.d)} ${t(a.t)}${a.p ? ` + ${diceL(a.p[0])} ${t(a.p[1])}` : ''}`);
+    if (a.s) bits.push(`${t('рятівний')} ${abLoc(AB6[ABK[a.s[0]]])} ${abLoc('СК')} ${a.s[1]}`);
+    if (a.f && R.EFFECTS[a.f]) bits.push(`→ ${t(R.EFFECTS[a.f].name)}`);
+    return `<div class="sb-atk"><b data-notr>${esc(ml(a.n))}</b> <span data-notr>${esc(bits.join(' · '))}</span></div>`;
+  };
+  const spec = (a) => `<div class="sb-atk"><b data-notr>${esc(ml(a.n))}</b> <span data-notr>${esc([`${t(AREA_N[a.a[0]])} ${a.a[1]} ${t('фт')}`,
+    `${t('рятівний')} ${abLoc(AB6[ABK[a.s[0]]])} ${abLoc('СК')} ${a.s[1]}`, `${diceL(a.d)} ${t(a.t)}`, a.rc ? `${t('перезарядка')} ${a.rc}` : ''].filter(Boolean).join(' · '))}</span></div>`;
+  const trait = (x) => { const [n, d] = typeof x === 'string' ? MON_TRAITS[x] : x; return `<div class="sb-tr"><b data-notr>${esc(ml(n))}.</b> <span data-notr>${esc(ml(d))}</span></div>`; };
+  return `${head}<h4 class="sb-h">Дії</h4>${m.ma ? `<div class="sb-atk"><b>Мультиатака</b> <span data-notr>×${m.ma}</span></div>` : ''}${(m.at || []).map(atk).join('')}${(m.sa || []).map(spec).join('')}
+    ${(m.tr || []).length ? `<h4 class="sb-h">Особливості</h4>${m.tr.map(trait).join('')}` : ''}
+    <p class="hint sb-src">SRD 5.1 · CC-BY-4.0</p>`;
+}
+// список ворогів бестіарію з пошуком; act — дія для рядка (перегляд або вибір у бій)
+function bestiaryList(q, act, sel) {
+  const ql = q.trim().toLowerCase();
+  const match = (n) => !ql || n.toLowerCase().includes(ql);
+  const mine = (S.myMonsters || []).filter((x) => match(x.data.name));
+  const std = Object.entries(MONSTERS).filter(([, m]) => match(ml(m.n)) || match(m.n[0]) || match(m.n[2]))
+    .sort((a, b) => crNum(a[1].cr) - crNum(b[1].cr) || ml(a[1].n).localeCompare(ml(b[1].n), LOCALES[LANG]));
+  const row = (id, o, sub) => `<div class="item${sel === id ? ' on' : ''}" data-act="${act}" data-id="${esc(id)}"><span class="ic">${esc(monIcon(o))}</span>
+    <div class="meta"><div class="nm" data-notr>${esc(monName(o))}${o.std ? '' : ` <span class="badge gold">${esc(t('мій'))}</span>`}</div><small data-notr>${esc(sub)}</small></div></div>`;
+  const sub = (m, std) => `${abLoc('ПН')} ${m.cr} · ${std ? ml(MON_TYPES[m.t]) : (m.t && MON_TYPES[m.t] ? ml(MON_TYPES[m.t]) : t('свій'))} · ${abLoc('КЗ')} ${m.ac} · ${abLoc('ХП')} ${m.hp}`;
+  return `${S.myMonsters === null ? '<div class="spinner" style="margin:8px auto;width:20px;height:20px"></div>'
+    : mine.length ? `<h3 class="sec">Мої вороги</h3>${mine.map((x) => row(`m:${x.id}`, { std: false, m: x.data }, sub(x.data, false))).join('')}` : ''}
+    <h3 class="sec">Бестіарій D&D 5e</h3>${std.length ? std.map(([k, m]) => row(`b:${k}`, { std: true, key: k, m }, sub(m, true))).join('') : empty('🔎', 'Нічого не знайдено')}`;
+}
+async function loadMyMonsters() {
+  try { S.myMonsters = (await api('myMonsters')).monsters; } catch (e) { if (S.myMonsters === null) S.myMonsters = []; toast(e.message, true); }
+  if (S.modal && ['cbAdd', 'monEdit'].includes(S.modal.type)) renderModal();
+  else render();
+}
+
 // ---------- Ефекти (стани) ----------
 const FX_FORMS = {
   uk: { round: ['раунд', 'раунди', 'раундів'], min: ['хвилина', 'хвилини', 'хвилин'], hour: ['година', 'години', 'годин'], day: ['день', 'дні', 'днів'] },
@@ -605,6 +731,38 @@ function evCharPicks(d, evId, sel) {
   }).join('')}</div>`;
 }
 // Картка однієї події: живі підсумки, поправки, позначки кидків
+// ---------- Бій: ініціатива й черговість ----------
+const MON_STATE_N = { ok: 'неушкоджений', hurt: 'поранений', bad: 'тяжко поранений', near: 'ледь живий', dead: 'переможений' };
+const cbIcon = (x) => (x.kind === 'pc' ? CLASS_ICON[x.classId] || '🧝' : x.icon || monIcon(monOf(x.mon, x.data)));
+const findCb = (id) => {
+  const evs = (S.room && S.room.room && (S.room.room.events || (S.room.room.event ? [S.room.room.event] : []))) || [];
+  for (const ev of evs) { const x = ev.combat && ev.combat.list.find((y) => y.id === Number(id)); if (x) return { ev, x }; }
+  return {};
+};
+// у вікні події майстра: черговість, ХП ворогів, керування ходами
+function combatPanel(ev) {
+  const cb = ev.combat;
+  if (!cb) return '';
+  const pending = cb.list.filter((x) => x.init == null);
+  const rows = cb.list.map((x) => {
+    const turn = cb.turnId === x.id;
+    const dead = x.kind === 'npc' && x.hp <= 0;
+    return `<div class="cb-row${turn ? ' on' : ''}${dead ? ' dead' : ''}">
+      <button class="cb-init${x.init == null ? ' wait' : ''}" data-act="cbInitModal" data-id="${x.id}">${x.init == null ? '⏳' : x.init}</button>
+      <span class="cb-ic">${esc(cbIcon(x))}</span>
+      <span class="grow cb-nm"${x.kind === 'npc' ? ` data-act="cbStat" data-id="${x.id}"` : ''}><span data-notr>${esc(cbLabel(x))}</span>${x.kind === 'npc' ? ` <small class="hint" data-notr>${esc(abLoc('КЗ'))} ${x.ac}</small>` : ''}</span>
+      <button class="cb-hp${x.kind === 'pc' ? ' pc' : ''}" data-act="cbHpModal" data-id="${x.id}" data-notr>${x.hp}/${x.hpMax}</button>
+      ${x.kind === 'npc' ? `<button class="cb-x" data-act="cbRemove" data-id="${x.id}" aria-label="${esc(t('Прибрати з бою'))}">✕</button>` : '<span class="cb-x"></span>'}</div>`;
+  }).join('');
+  return `<div class="cb">
+    <div class="row cb-head"><b class="grow">🎯 Ініціатива</b><span class="hint">${cb.round ? `Раунд ${cb.round}` : 'Збір ініціативи'}</span></div>
+    ${rows || '<p class="hint">У бою ще нікого немає</p>'}
+    ${!cb.round && pending.length ? `<p class="hint cb-wait">⏳ Ще не кинули: <span data-notr>${esc(pending.map(cbLabel).join(', '))}</span>. Дотик до ⏳ — кинути за гравця.</p>` : ''}
+    <div class="btns cb-ctl">${cb.round
+    ? `<button class="btn sm" data-act="cbNext" data-id="${ev.id}" data-d="-1" aria-label="${esc(t('Попередній хід'))}">◀</button><button class="btn sm primary grow" data-act="cbNext" data-id="${ev.id}" data-d="1">▶ Наступний хід</button>`
+    : `<button class="btn sm primary grow" data-act="cbStart" data-id="${ev.id}">▶ Почати бій</button>`}
+      <button class="btn sm" data-act="cbAddModal" data-id="${ev.id}">＋ Ворог</button></div></div>`;
+}
 function eventCard(d, ev, many) {
   const [tn, ti] = evType(ev.type);
   const chars = ev.chars || [];
@@ -615,6 +773,7 @@ function eventCard(d, ev, many) {
   const chip = (icon, v, always) => (v || always ? `<span class="ev-st">${icon} ${v}</span>` : '');
   return `<div class="card ev-card" data-ev="${ev.id}"><div class="row"><div class="grow"><b class="ev-name">${ti} ${esc(ev.name)}</b>
     <small class="hint">${tn} · триває ${evMins(ev)} хв</small></div><span class="ev-live">● запис</span></div>
+    ${combatPanel(ev)}
     <div class="ev-legend hint">⚔️ завдав шкоди · 🩸 отримав · 💚 лікування · 🎲 кидки · 📌 інші дії</div>
     ${chars.length ? chars.map((x) => `<div class="ln ev-ch"><span class="grow">${esc(x.name)}</span>
       ${chip('⚔️', x.dealt, combat)}${chip('🩸', x.taken, combat)}${chip('💚', x.heal, false)}${chip('🎲', x.rolls, true)}${chip('📌', x.acts, false)}
@@ -755,8 +914,13 @@ function charHtml(ch, M) {
   const canRoll = !M && !isRO();
   if (canRoll) tabs.push(['dice', '🎲']);
   if (S.tab === 'dice' && !canRoll) S.tab = 'sheet';
-  h += `<div class="tabs">${tabs.map(([k, l]) => `<button class="${S.tab === k ? 'on' : ''}${k === 'dice' ? ' tab-dice' : ''}" data-act="tab" data-tab="${k}"${k === 'sheet' ? ' data-notr' : ''}${k === 'dice' ? ` aria-label="${esc(t('Кидки'))}"` : ''}>${l}</button>`).join('')}</div>`;
+  // бій, у якому бере участь персонаж гравця
+  const inCombat = canRoll && S.room && S.room.room.event && S.room.room.event.combat;
+  if (inCombat) tabs.push(['combat', '⚔️']);
+  if (S.tab === 'combat' && !inCombat) S.tab = 'sheet';
+  h += `<div class="tabs">${tabs.map(([k, l]) => `<button class="${S.tab === k ? 'on' : ''}${k === 'dice' || k === 'combat' ? ' tab-dice' : ''}" data-act="tab" data-tab="${k}"${k === 'sheet' ? ' data-notr' : ''}${k === 'dice' ? ` aria-label="${esc(t('Кидки'))}"` : ''}${k === 'combat' ? ` aria-label="${esc(t('Бій'))}"` : ''}>${l}</button>`).join('')}</div>`;
   if (S.tab === 'dice') h += diceTab(ch, dv);
+  else if (S.tab === 'combat') h += combatTab(ch, dv);
   else if (S.tab === 'spells') h += spellsTab(ch, dv, M);
   else if (S.tab === 'info') h += infoTab(ch);
   else if (S.tab === 'inv') h += invTab(ch, M);
@@ -1704,19 +1868,29 @@ function catalogEffectsHtml() {
     <h3 class="sec">Стандартні ефекти D&D 5e</h3>
     ${R.EFFECT_GROUPS.map(([g, gn]) => `<div class="fld"><span>${gn}</span></div>${Object.entries(R.EFFECTS).filter(([, d]) => d.g === g).map(([k, d]) => row('fxStdInfo', k, d.icon, d.name, '', true)).join('')}`).join('')}`;
 }
+// Шапка каталогу майстра: три кнопки «створити» і вкладки Предмети / Ефекти / Бестіарій
+function catalogTop() {
+  const k = S.cat.kind || 'items';
+  const tab = (key, label) => `<button class="${k === key ? 'on' : ''}" data-act="catKind" data-k="${key}">${label}</button>`;
+  return `<div class="top"><h2>📦 Каталог</h2></div>
+    <div class="cat-new"><button class="btn sm${k === 'items' ? ' primary' : ''}" data-act="myNewItem">＋ Створити предмет</button><button class="btn sm${k === 'effects' ? ' primary' : ''}" data-act="fxNew">＋ Створити ефект</button><button class="btn sm${k === 'monsters' ? ' primary' : ''}" data-act="monNew">＋ Створити ворога</button></div>
+    <div class="tabs cat-kind">${tab('items', '🎒 Предмети')}${tab('effects', '✨ Ефекти')}${tab('monsters', '🐉 Бестіарій')}</div>`;
+}
 function catalogHtml() {
   const manage = !cur().charId;
   const ch = manage ? null : currentChar();
   if (manage && S.cat.kind === 'effects') {
-    return `<div class="top"><h2>📦 Каталог</h2></div>
-    <div class="btns cat-new"><button class="btn" data-act="myNewItem">＋ Створити предмет</button><button class="btn primary" data-act="fxNew">＋ Створити ефект</button></div>
-    <div class="tabs cat-kind"><button data-act="catKind" data-k="items">🎒 Предмети</button><button class="on" data-act="catKind" data-k="effects">✨ Ефекти</button></div>
+    return `${catalogTop()}
     <p class="hint" style="margin:4px">Свої ефекти доступні у всіх твоїх кімнатах: на листі персонажа — «＋ Додати статус».</p>
     ${catalogEffectsHtml()}`;
   }
-  return `<div class="top"><h2>${manage ? '📦 Каталог' : '🎁 Видати предмет'}</h2></div>
-  ${manage ? `<div class="btns cat-new"><button class="btn primary" data-act="myNewItem">＋ Створити предмет</button><button class="btn" data-act="fxNew">＋ Створити ефект</button></div>
-    <div class="tabs cat-kind"><button class="on" data-act="catKind" data-k="items">🎒 Предмети</button><button data-act="catKind" data-k="effects">✨ Ефекти</button></div>` : ''}
+  if (manage && S.cat.kind === 'monsters') {
+    return `${catalogTop()}
+    <p class="hint" style="margin:4px">Вороги з D&D 5e і твої власні. У бою їх додає майстер кнопкою «＋ Ворог» у вікні події.</p>
+    <input class="search" type="search" data-bind="cat.mq" data-live="bestiary" placeholder="Пошук ворога…" value="${esc(S.cat.mq || '')}">
+    <div id="bestList">${bestiaryList(S.cat.mq || '', 'monView')}</div>`;
+  }
+  return `${manage ? catalogTop() : '<div class="top"><h2>🎁 Видати предмет</h2></div>'}
   <p class="hint" style="margin:4px">${manage ? 'D&D 5e (SRD) і твої власні предмети. Власні доступні у всіх твоїх кімнатах. Натисни на предмет D&D, щоб зберегти його змінену копію.'
     : `Персонаж: <b>${ch ? esc(ch.sheet.name) : ''}</b>`}</p>
   ${S.myItems === null ? '<div class="spinner" style="margin:8px auto;width:20px;height:20px"></div>' : ''}
@@ -1839,6 +2013,96 @@ const MODALS = {
     }, (ch) => Math.max(ch.sheet.level, ch.sheet.targetLevel) >= 20)}
     <p class="hint">Досвід підтягнеться до порогу нового рівня. Гравці пройдуть підвищення за правилами 5e.</p>
     <button class="btn primary block mt" data-act="lvlAllSave">Дозволити підвищення</button>`,
+  // ---- бій ----
+  cbAdd: (m) => `${hdr('＋ Ворог у бій', 'Бестіарій D&D 5e і твої вороги')}
+    <input class="search" type="search" data-bind="modal.q" data-live="bestiary" placeholder="Пошук ворога…" value="${esc(m.q)}">
+    <div id="bestList" class="cb-best">${bestiaryList(m.q, 'cbPick', m.sel)}</div>
+    ${m.sel ? `<div class="row fld fx-dur"><span class="grow" data-notr>${esc(monIcon(monOf(m.sel)))} ${esc(monName(monOf(m.sel)))}</span><div class="stepper"><button data-act="cbCount" data-d="-1">−</button><b>${m.count}</b><button data-act="cbCount" data-d="1">+</button></div></div>
+      <p class="hint">Ініціатива кожного ворога кидається автоматично (к20 + Спритність).</p>
+      <button class="btn primary block mt" data-act="cbAddSave">＋ Додати в бій</button>` : '<p class="hint mt">Обери ворога зі списку.</p>'}`,
+  cbHp: (m) => {
+    const { x } = findCb(m.id);
+    if (!x) return null;
+    return `${hdr(`<span data-notr>${esc(cbIcon(x))} ${esc(cbLabel(x))}</span>`, `<span data-notr>${esc(abLoc('ХП'))} ${x.hp}/${x.hpMax}</span>`)}
+    <label class="fld"><span>Скільки</span><input type="number" inputmode="numeric" min="1" data-bind="modal.amount" value="${esc(m.amount)}"></label>
+    <div class="chips">${[1, 2, 3, 5, 8, 10, 15, 20].map((n) => `<button class="chip ${Number(m.amount) === n ? 'on' : ''}" data-act="cbHpQuick" data-n="${n}">${n}</button>`).join('')}</div>
+    <div class="btns mt"><button class="btn danger" data-act="cbHpApply" data-d="dmg">🗡 Шкода</button><button class="btn" data-act="cbHpApply" data-d="heal">💚 Лікування</button></div>`;
+  },
+  cbInit: (m) => {
+    const { x } = findCb(m.id);
+    if (!x) return null;
+    return `${hdr(`<span data-notr>${esc(cbIcon(x))} ${esc(cbLabel(x))}</span>`, `${esc(t('Ініціатива'))}: ${x.init == null ? '—' : x.init}`)}
+    <label class="fld"><span>Ініціатива</span><input type="number" inputmode="numeric" data-bind="modal.init" value="${esc(m.init)}"></label>
+    <div class="btns"><button class="btn" data-act="cbInitRoll">🎲 Кинути к20 ${fm(x.initMod || 0)}</button><button class="btn primary" data-act="cbInitSave">Зберегти</button></div>`;
+  },
+  cbAct: (m) => {
+    const ch = currentChar();
+    const ev = S.room.room.event;
+    if (!ch || !ev || !ev.combat) return null;
+    const me = ev.combat.list.find((x) => x.charId === ch.id);
+    const chip = (f, v, label, notr, dis) => `<button class="chip ${String(m[f]) === String(v) ? 'on' : ''}${dis ? ' disabled' : ''}" data-act="cbActPick" data-f="${f}" data-v="${esc(v)}"${notr ? ' data-notr' : ''}>${label}</button>`;
+    const foes = ev.combat.list.filter((x) => x.kind === 'npc' && x.state !== 'dead');
+    const allies = ev.combat.list.filter((x) => x.kind === 'pc' && (!me || x.id !== me.id));
+    const targets = `<div class="fld"><span>Ціль</span></div><div class="chips wrap">${chip('target', '', esc(t('без цілі')), true)}${[...foes, ...allies].map((x) => chip('target', x.id, `${esc(cbIcon(x))} ${esc(cbLabel(x))}`, true)).join('')}</div>`;
+    if (m.k === 'attack') {
+      const ws = charWeapons(ch);
+      return `${hdr('⚔️ Атака', 'Запишеться в хроніку бою')}
+      <div class="fld"><span>Чим</span></div><div class="chips wrap">${ws.map(({ it }) => chip('item', it.id, esc(it.data.name))).join('')}${chip('item', '0', esc(t('Беззбройний удар')), true)}</div>
+      ${targets}
+      <div class="btns mt2"><button class="btn" data-act="cbActSave">⚔️ Записати</button><button class="btn primary" data-act="cbActSave" data-roll="1">⚔️ Записати й кинути 🎲</button></div>`;
+    }
+    if (m.k === 'spell') {
+      const list = cbSpells(ch);
+      const sp = list[m.spell];
+      const max = R.sheetSlots(ch.sheet);
+      const used = ch.sheet.spell.slotsUsed || [];
+      const slots = sp && sp.level > 0 ? Array.from({ length: 9 }, (_, i) => i + 1).filter((L) => L >= sp.level && (max[L - 1] || 0) > 0) : [];
+      return `${hdr('✨ Закляття', 'Комірка витрачається автоматично')}
+      ${list.length ? `<div class="chips wrap">${list.map((x, i) => chip('spell', i, `${x.level ? `<small>${x.level}</small> ` : ''}${esc(x.name)}`)).join('')}</div>` : '<p class="hint">Закляття немає</p>'}
+      ${sp && sp.level > 0 ? `<div class="fld"><span>Комірка</span></div><div class="chips wrap">${slots.map((L) => {
+        const free = (max[L - 1] || 0) - (used[L - 1] || 0);
+        return chip('slot', L, `${L} коло · ${free}/${max[L - 1]}`, false, free <= 0);
+      }).join('') || '<p class="hint">Немає комірок потрібного кола</p>'}</div>` : sp ? '<p class="hint">Замовляння — без комірки.</p>' : ''}
+      ${sp ? targets : ''}
+      <button class="btn primary block mt2${sp ? '' : ' disabled'}" data-act="cbActSave">✨ Записати</button>`;
+    }
+    if (m.k === 'item') {
+      const its = (ch.items || []).filter((it) => R.isConsumable(it.data) && it.qty > 0);
+      return `${hdr('🧪 Предмет', 'Використання зменшує кількість')}
+      ${its.length ? its.map((it) => `<div class="row cb-item"><span class="grow">${esc(it.data.name)} <small class="hint">×${it.qty}</small></span><button class="btn sm primary" data-act="cbUseItem" data-id="${it.id}">Використати</button></div>`).join('')
+        : empty('🎒', 'Витратних предметів немає')}`;
+    }
+    const res = R.sheetResources(ch.sheet).filter((r) => r.used < r.max);
+    return `${hdr('🏃 Інші дії', 'Стандартні дії та вміння класу')}
+      <div class="chips wrap">${CB_ACTS.map(([k, n]) => chip('act', k, n)).join('')}</div>
+      ${res.length ? `<div class="fld"><span>Уміння класу</span></div><div class="chips wrap">${res.map((r) => chip('act', `res:${r.id}`, `🌟 ${esc(r.name)} <small>${r.max - r.used}/${r.max}</small>`)).join('')}</div>` : ''}
+      ${targets}
+      <button class="btn primary block mt2${m.act ? '' : ' disabled'}" data-act="cbActSave">Записати</button>`;
+  },
+  monView: (m) => {
+    const o = monOf(m.mon, m.data);
+    if (!o) return null;
+    return `${hdr(`<span data-notr>${esc(monIcon(o))} ${esc(monName(o))}${m.num ? ` ${m.num}` : ''}</span>`, m.hp != null ? `<span data-notr>${esc(abLoc('ХП'))} ${m.hp}/${m.hpMax}</span>` : '')}
+      ${statBlockHtml(o)}`;
+  },
+  monEdit: (m) => {
+    const f = m.form;
+    return `${hdr(m.id ? '✏️ Мій ворог' : '＋ Новий ворог', 'Твій бестіарій — спільний для всіх кімнат')}
+    <label class="fld"><span>Назва</span><input data-bind="modal.form.name" maxlength="60" placeholder="Напр. Болотяний жах" value="${esc(f.name)}"></label>
+    <div class="fld"><span>Значок</span></div>
+    <div class="chips wrap fx-icons">${['👹', '💀', '🐺', '🐉', '🧟', '👻', '🕷️', '🐍', '🦇', '🗡️', '🧙', '🗿'].map((i) => `<button class="chip ${f.icon === i ? 'on' : ''}" data-act="monIcon" data-i="${i}">${i}</button>`).join('')}
+      <input class="fx-icon-in" data-bind="modal.form.icon" maxlength="8" value="${esc(f.icon)}" aria-label="${esc(t('Свій значок'))}"></div>
+    <div class="row gap"><label class="fld grow"><span>Тип</span><select data-bind="modal.form.t">${Object.entries(MON_TYPES).map(([k, v]) => `<option value="${k}" ${f.t === k ? 'selected' : ''} data-notr>${esc(ml(v))}</option>`).join('')}</select></label>
+      <label class="fld"><span>${ab('ПН')}</span><select data-bind="modal.form.cr">${CR_LIST.map((c) => `<option value="${c}" ${String(f.cr) === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label></div>
+    <div class="row gap"><label class="fld grow"><span>${ab('КЗ')}</span><input type="number" inputmode="numeric" data-bind="modal.form.ac" value="${esc(f.ac)}"></label>
+      <label class="fld grow"><span>${ab('ХП')}</span><input type="number" inputmode="numeric" data-bind="modal.form.hp" value="${esc(f.hp)}"></label></div>
+    <label class="fld"><span>Швидкість</span><input data-bind="modal.form.sp" maxlength="80" value="${esc(f.sp)}"></label>
+    <div class="sb-abs edit">${AB6.map((a, i) => `<label class="sb-ab"><small>${ab(a)}</small><input type="number" inputmode="numeric" data-bind="modal.form.ab.${i}" value="${esc(f.ab[i])}"></label>`).join('')}</div>
+    <label class="fld"><span>Атаки та дії</span><textarea data-bind="modal.form.acts" rows="4" maxlength="2000" placeholder="Укус: +5 до влучання, 2к6+3 колюча">${esc(f.acts)}</textarea></label>
+    <label class="fld"><span>Особливості та опис</span><textarea data-bind="modal.form.desc" rows="4" maxlength="3000">${esc(f.desc)}</textarea></label>
+    <button class="btn primary block mt2" data-act="monSave">💾 Зберегти в бестіарій</button>
+    ${m.id ? '<button class="btn danger block mt" data-act="monDelete">🗑 Видалити з бестіарію</button>' : ''}`;
+  },
   // Накласти статус на персонажа: стандартні ефекти 5e або свої з каталогу
   fxAdd: (m) => {
     const ch = currentChar();
@@ -2990,7 +3254,141 @@ const ACT = {
       ${M ? `<button class="btn sm danger mt" data-act="fxRemove" data-id="${e.id}">Зняти статус</button>` : ''}`);
   },
   // каталог: свої ефекти
-  catKind: ({ k }) => { S.cat.kind = k === 'effects' ? 'effects' : 'items'; render(); if (S.cat.kind === 'effects') loadMyEffects(); },
+  catKind: ({ k }) => {
+    S.cat.kind = ['effects', 'monsters'].includes(k) ? k : 'items';
+    render();
+    if (S.cat.kind === 'effects') loadMyEffects();
+    if (S.cat.kind === 'monsters') loadMyMonsters();
+  },
+  // ---- бій (майстер) ----
+  cbAddModal: ({ id }) => { openModal({ type: 'cbAdd', eventId: Number(id), q: '', sel: '', count: 1 }); loadMyMonsters(); },
+  cbPick: ({ id }) => { S.modal.sel = id; renderModal(); },
+  cbCount: ({ d }) => { S.modal.count = Math.max(1, Math.min(20, S.modal.count + Number(d))); renderModal(); },
+  cbAddSave: async () => {
+    const m = S.modal;
+    const r = await reloadAfter(() => api('addEnemy', { roomId: roomId(), eventId: m.eventId, mon: m.sel, count: m.count }), `＋ ${monName(monOf(m.sel))}${m.count > 1 ? ` ×${m.count}` : ''}`);
+    if (r) closeModal();
+  },
+  cbStat: ({ id }) => {
+    const { x } = findCb(id);
+    if (x) openModal({ type: 'monView', mon: x.mon, data: x.data, num: x.num, hp: x.hp, hpMax: x.hpMax });
+  },
+  cbRemove: async ({ id }) => {
+    const { x } = findCb(id);
+    if (!x || !(await confirmBox(`Прибрати «${cbLabel(x)}» з бою?`))) return;
+    await reloadAfter(() => api('removeEnemy', { roomId: roomId(), id: x.id }));
+  },
+  cbHpModal: ({ id }) => openModal({ type: 'cbHp', id: Number(id), amount: '' }),
+  cbHpQuick: ({ n }) => { S.modal.amount = n; renderModal(); },
+  cbHpApply: async ({ d }) => {
+    const m = S.modal;
+    const { x } = findCb(m.id);
+    const n = Math.trunc(num(m.amount));
+    if (!x || n <= 0) { toast('Вкажи кількість', true); return; }
+    const r = await reloadAfter(() => (x.kind === 'pc'
+      ? api('trackers', { charId: x.charId, patch: d === 'heal' ? { heal: n } : { damage: n } })
+      : api('enemyHp', { roomId: roomId(), id: x.id, delta: d === 'heal' ? n : -n })));
+    if (r) closeModal();
+  },
+  cbInitModal: ({ id }) => { const { x } = findCb(id); if (x) openModal({ type: 'cbInit', id: x.id, init: x.init == null ? '' : x.init }); },
+  cbInitRoll: async () => {
+    const r = await reloadAfter(() => api('setInit', { roomId: roomId(), id: S.modal.id }));
+    if (r) { closeModal(); toast(`🎲 ${t('Ініціатива')}: ${r.init}`); }
+  },
+  cbInitSave: async () => {
+    const v = S.modal.init;
+    if (v === '' || !Number.isFinite(Number(v))) { toast('Вкажи число', true); return; }
+    const r = await reloadAfter(() => api('setInit', { roomId: roomId(), id: S.modal.id, init: Number(v) }));
+    if (r) closeModal();
+  },
+  cbStart: async ({ id }) => {
+    const ev = findEv(id);
+    const pend = ev && ev.combat ? ev.combat.list.filter((x) => x.init == null) : [];
+    if (pend.length && !(await confirmBox(`Ще не кинули ініціативу: ${pend.map(cbLabel).join(', ')}. Кинути за них автоматично й почати бій?`))) return;
+    await reloadAfter(() => api('combatStart', { roomId: roomId(), eventId: Number(id) }), '⚔️ Бій почався!');
+  },
+  cbNext: ({ id, d }) => reloadAfter(() => api('combatNext', { roomId: roomId(), eventId: Number(id), dir: Number(d) })),
+  // ---- бій (гравець) ----
+  openCombat: () => { if (S.room && S.room.role !== 'master' && S.room.character) { S.tab = 'combat'; render(); } },
+  cbRollInit: async () => {
+    const ch = S.room && S.room.character;
+    if (!ch) return;
+    const dv = derived(ch);
+    const r = await reloadAfter(() => api('rollDice', { charId: ch.id, kind: 'init', dice: { 20: 1 }, mod: dv.init, mode: R.effectRoll(ch.effects, 'init').mode }));
+    if (r && r.roll) { S.tab = 'combat'; render(); toast(`🎲 ${t('Ініціатива')}: ${r.roll.total}`); }
+  },
+  cbActModal: ({ k }) => openModal({ type: 'cbAct', k, item: '', target: '', spell: '', slot: '', act: '' }),
+  cbActPick: ({ f, v }) => {
+    const m = S.modal;
+    m[f] = m[f] === v && f === 'target' ? '' : v;
+    if (f === 'spell') {
+      const sp = cbSpells(currentChar())[Number(v)];
+      const ch = currentChar();
+      const max = R.sheetSlots(ch.sheet);
+      const used = ch.sheet.spell.slotsUsed || [];
+      m.slot = sp && sp.level > 0 ? (Array.from({ length: 9 }, (_, i) => i + 1).find((L) => L >= sp.level && (max[L - 1] || 0) - (used[L - 1] || 0) > 0) || '') : 0;
+    }
+    renderModal();
+  },
+  cbActSave: async ({ roll }) => {
+    const m = S.modal;
+    const ch = currentChar();
+    const p = { charId: ch.id, kind: m.k === 'std' ? 'std' : m.k, target: m.target ? Number(m.target) : undefined };
+    if (m.k === 'attack') { if (m.item === '') { toast('Обери, чим атакуєш', true); return; } p.itemId = Number(m.item) || undefined; }
+    if (m.k === 'spell') {
+      const sp = cbSpells(ch)[Number(m.spell)];
+      if (!sp) { toast('Обери закляття', true); return; }
+      if (sp.level > 0 && !m.slot) { toast('Немає вільної комірки', true); return; }
+      p.spell = sp.name;
+      p.slot = sp.level > 0 ? Number(m.slot) : 0;
+    }
+    if (m.k === 'std') {
+      if (!m.act) { toast('Обери дію', true); return; }
+      if (m.act.startsWith('res:')) { p.kind = 'feature'; p.resId = m.act.slice(4); } else p.act = m.act;
+    }
+    const r = await reloadAfter(() => api('combatAction', p), '📝 Записано в хроніку бою');
+    if (!r) return;
+    closeModal();
+    if (roll && p.itemId) { S.tab = 'dice'; ACT.dicePurpose({ value: `attack:${p.itemId}` }); }
+  },
+  cbUseItem: async ({ id }) => {
+    const ch = currentChar();
+    const it = ch && ch.items.find((x) => x.id === Number(id));
+    if (!it) return;
+    const r = await reloadAfter(() => api('useItem', { itemId: it.id, qty: 1 }), `Використано: ${it.data.name}`);
+    if (r) closeModal();
+  },
+  cbEndTurn: async () => {
+    const ch = currentChar();
+    if (!(await confirmBox('Завершити хід?'))) return;
+    await reloadAfter(() => api('endTurn', { charId: ch.id }), '✅ Хід завершено');
+  },
+  // ---- бестіарій ----
+  monView: ({ id }) => {
+    const o = monOf(id);
+    if (!o) return;
+    if (!o.std) { ACT.monEditMine({ id: id.split(':')[1] }); return; }
+    openModal({ type: 'monView', mon: id });
+  },
+  monNew: () => openModal({ type: 'monEdit', id: 0, form: { name: '', icon: '👹', t: 'monstrosity', cr: '1', ac: 12, hp: 10, sp: '30 фт', ab: [10, 10, 10, 10, 10, 10], acts: '', desc: '' } }),
+  monEditMine: ({ id }) => {
+    const x = (S.myMonsters || []).find((y) => y.id === Number(id));
+    if (x) openModal({ type: 'monEdit', id: x.id, form: { ...x.data, ab: x.data.ab.slice() } });
+  },
+  monIcon: ({ i }) => { S.modal.form.icon = i; renderModal(); },
+  monSave: async () => {
+    const m = S.modal;
+    if (!String(m.form.name || '').trim()) { toast('Вкажи назву ворога', true); return; }
+    const f = { ...m.form, ab: m.form.ab.map((v) => Number(v) || 10), ac: Number(m.form.ac) || 10, hp: Number(m.form.hp) || 1 };
+    const ok = await run(() => api('saveMyMonster', { id: m.id || undefined, monster: f }), '🐉 Збережено в бестіарій');
+    if (ok) { closeModal(); await loadMyMonsters(); }
+  },
+  monDelete: async () => {
+    const m = S.modal;
+    if (!(await confirmBox(`Видалити ворога «${m.form.name}» з бестіарію? Уже додані в бій залишаться.`))) return;
+    const ok = await run(() => api('deleteMyMonster', { id: m.id }), 'Видалено з бестіарію');
+    if (ok) { closeModal(); await loadMyMonsters(); }
+  },
   fxNew: () => openModal({ type: 'fxEdit', id: 0, form: { name: '', icon: '✨', desc: '' }, n: 10, unit: 'round' }),
   fxEditMine: ({ id }) => {
     const x = (S.myEffects || []).find((y) => y.id === Number(id));
@@ -3281,6 +3679,10 @@ document.addEventListener('input', (e) => {
   if (!el.dataset || !el.dataset.bind || el.tagName === 'SELECT' || el.type === 'checkbox') return;
   setPath(el.dataset.bind, elValue(el));
   if (el.dataset.live === 'catalog') { const box = document.getElementById('catList'); if (box) box.innerHTML = catalogListHtml(); }
+  if (el.dataset.live === 'bestiary') {
+    const box = document.getElementById('bestList');
+    if (box) box.innerHTML = S.modal && S.modal.type === 'cbAdd' ? bestiaryList(S.modal.q || '', 'cbPick', S.modal.sel) : bestiaryList(S.cat.mq || '', 'monView');
+  }
   if (el.dataset.live === 'spells') { const box = document.getElementById('spList'); if (box) box.innerHTML = spellRowsHtml(); return; }
   if (el.dataset.bind.startsWith('wiz.')) updateWizNav();
 });

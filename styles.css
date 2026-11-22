@@ -503,3 +503,58 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .grant-all .btn { flex: 1; }
 .ev-pick:has(input:not(:checked)) small { opacity: .45; }
 .ev-pick.off { opacity: .5; }
+
+/* ---------- бестіарій ---------- */
+.cat-new { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cat-new .btn { flex: 1 1 30%; min-width: 0; padding-left: 6px; padding-right: 6px; }
+.sb-meta { color: var(--hint); font-size: 13px; font-style: italic; margin: -4px 0 8px; }
+.sb-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; }
+.sb-stats small { color: var(--hint); }
+.sb-line { font-size: 13px; color: var(--hint); margin: 6px 0 8px; }
+.sb-abs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 6px 0 4px; }
+.sb-ab { display: flex; flex-direction: column; align-items: center; padding: 6px 2px; border-radius: 10px; background: var(--soft); font-size: 14px; }
+.sb-ab small { font-size: 11px; color: var(--hint); }
+.sb-abs.edit input { width: 100%; text-align: center; padding: 4px 2px; font-size: 15px; }
+.sb-h { margin: 12px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+.sb-atk, .sb-tr { font-size: 14px; line-height: 1.45; margin-bottom: 6px; }
+.sb-atk span, .sb-tr span { color: var(--text); opacity: .9; }
+.sb-txt { white-space: pre-wrap; font-size: 14px; line-height: 1.45; }
+.sb-src { margin-top: 10px; font-size: 11px; }
+.item.on { box-shadow: inset 0 0 0 2px var(--accent); }
+.cb-best { max-height: 46vh; overflow-y: auto; margin: 6px 0; }
+
+/* ---------- бій: ініціатива ---------- */
+.cb { margin: 10px 0 8px; padding: 10px; border-radius: 12px; background: color-mix(in srgb, var(--danger) 6%, var(--soft)); }
+.cb-head { margin-bottom: 6px; align-items: center; }
+.cb-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-radius: 10px; }
+.cb-row + .cb-row { margin-top: 2px; }
+.cb-row.on { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.cb-row.me .cb-nm { font-weight: 700; }
+.cb-row.dead { opacity: .5; }
+.cb-row.dead .cb-nm { text-decoration: line-through; }
+.cb-init { min-width: 38px; height: 32px; border-radius: 9px; background: var(--card); font-weight: 800; font-size: 15px; color: var(--text); flex: none; text-align: center; line-height: 32px; }
+.cb-init.wait { color: var(--hint); }
+.cb-ic { font-size: 18px; flex: none; }
+.cb-nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.cb-nm[data-act] { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.cb-hp { min-width: 62px; height: 30px; border-radius: 9px; background: var(--card); font-size: 13px; font-weight: 700; color: var(--text); flex: none; font-variant-numeric: tabular-nums; }
+.cb-hp.pc { color: #2fbf4a; }
+.cb-x { width: 26px; height: 26px; flex: none; color: var(--danger); font-size: 13px; }
+.cb-wait { font-size: 12px; margin: 6px 2px 0; }
+.cb-ctl { margin-top: 8px; }
+.cb-ctl .grow { flex: 1; }
+.cb-state { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 8px; white-space: nowrap; background: var(--card); }
+.cb-state.st-ok { color: #2fbf4a; }
+.cb-state.st-hurt { color: #d9b23a; }
+.cb-state.st-bad { color: #e58a3a; }
+.cb-state.st-near, .cb-state.st-dead { color: var(--danger); }
+.cb-pchp { color: var(--hint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cb-banner { cursor: pointer; display: block; }
+.cb-banner .cb-st { margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cb-banner.my { background: color-mix(in srgb, var(--accent) 28%, var(--card)); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.cb-my { color: var(--accent); }
+.cb-roll { text-align: center; }
+.cb-acts .cb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.cb-item { padding: 8px 2px; border-bottom: 1px solid color-mix(in srgb, var(--hint) 18%, transparent); }
+.cb-ctl .btn:not(.grow) { flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
+.cb-nm .hint { display: inline; margin-left: 4px; }
