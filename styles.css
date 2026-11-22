@@ -432,7 +432,10 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .ev-roll .v.c20 { color: var(--gold); }
 .ev-roll .v.c1 { color: var(--danger); }
 .ev-free { font-size: 13px; margin: 8px 4px 0; }
-.ev-badge { max-width: 48%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; }
+.ev-badge { max-width: 48%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; cursor: help; }
+.log-sum summary { cursor: pointer; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.log-sum summary::-webkit-details-marker { display: none; }
+.log-sum pre { white-space: pre-wrap; font: inherit; font-size: 13px; line-height: 1.45; margin: 8px 0 2px; color: var(--text); }
 .ev-picks { margin: 2px 0 4px; }
 .ev-pick { padding: 8px 2px; gap: 10px; border-bottom: 1px solid color-mix(in srgb, var(--hint) 18%, transparent); }
 .ev-pick:last-child { border-bottom: 0; }

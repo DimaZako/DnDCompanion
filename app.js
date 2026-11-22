@@ -572,7 +572,7 @@ function playerCard(p) {
     <div class="meta"><b>${esc(s.name)}</b><small>${esc(raceName(s))} · ${esc(className(s))} ${s.level} рів. · ${esc(p.name)}</small></div>
     <div class="center"><small>${ab('КЗ')}</small><div><b>${dv.ac}</b></div></div><span class="chev">›</span></div>
     <div class="row mt" style="margin-top:8px"><small class="grow">ХП ${s.hp.cur}/${s.hp.max}${s.hp.temp ? ` (+${s.hp.temp})` : ''}</small>
-    ${pev ? `<span class="badge red ev-badge">${evType(pev.type)[1]} <span data-notr>${esc(pev.name)}</span></span>` : ''}
+    ${pev ? `<span class="badge red ev-badge" data-act="evTip" data-id="${pev.id}">${evType(pev.type)[1]} <span data-notr>${esc(pev.name)}</span></span>` : ''}
     ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${R.shortRestActive(s, nowSec()) ? ' <span class="badge green">☕</span>' : ''}${R.inspCount(s) ? ` <span class="badge gold">⭐ ${R.inspCount(s)}</span>` : ''}</div>
     <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div></div>`;
 }
@@ -1653,7 +1653,10 @@ function logHtml() {
   return `<div class="top"><h2>📜 Журнал</h2></div>
   <div class="chips"><button class="chip ${!S.logAll ? 'on' : ''}" data-act="logToggle" data-all="0">Поточна сесія</button><button class="chip ${S.logAll ? 'on' : ''}" data-act="logToggle" data-all="1">Увесь журнал</button></div>
   <div class="btns"><button class="btn" data-act="exportLog">📥 Надіслати .txt у чат</button><button class="btn" data-act="endSession">🏁 Завершити сесію</button></div>
-  <div class="card">${!L ? '<div class="spinner" style="margin:20px auto"></div>' : L.entries.length ? L.entries.map((e) => `<div class="log-e"><small>${fmt(e.ts)}${S.logAll ? ` · сесія ${e.session}` : ''} · ${esc(e.actor)}</small>${esc(e.text)}</div>`).join('') : empty('📜', 'Записів поки немає')}</div>`;
+  <div class="card">${!L ? '<div class="spinner" style="margin:20px auto"></div>' : L.entries.length ? L.entries.map((e) => (e.summary
+    // підсумок завершеної сесії (вже мовою користувача)
+    ? `<details class="log-e log-sum"><summary><small>${fmt(e.ts)} · сесія ${e.session}</small><b>📜 Підсумок сесії ${e.session}</b></summary><pre data-notr>${esc(e.summary.slice(1).join('\n').trim())}</pre></details>`
+    : `<div class="log-e"><small>${fmt(e.ts)}${S.logAll ? ` · сесія ${e.session}` : ''} · ${esc(e.actor)}</small>${esc(e.text)}</div>`)).join('') : empty('📜', 'Записів поки немає')}</div>`;
 }
 
 // ================= Модальні вікна =================
@@ -2138,6 +2141,15 @@ const ACT = {
       if (cur().view === 'archiveChar') render();
     } catch (e) { toast(e.message, true); back(); }
   },
+  // підказка до значка події на картці гравця (дотик; на комп'ютері — наведення)
+  evTip: ({ id }, el) => {
+    const ev = findEv(id);
+    if (!ev) return;
+    const [tn, ti] = evType(ev.type);
+    const names = roomChars(S.room).filter((ch) => ev.members.includes(ch.id)).map((ch) => ch.sheet.name);
+    showTip(el, `${ti} ${ev.name}`, `<div>Бере участь у цій події</div><div class="hint">${tn} · триває ${evMins(ev)} хв</div>
+      <div style="margin-top:6px"><b>Учасники</b>: <span data-notr>${esc(names.join(', '))}</span></div>`);
+  },
   abbr: ({ k }, el) => {
     const dice = diceInfo(k);
     const [title, body] = dice || ABBR[k] || [k, ''];
@@ -2261,10 +2273,10 @@ const ACT = {
   exportLog: async () => { await run(() => api('exportLog', { roomId: roomId(), all: S.logAll }), '📥 Файл надіслано в чат із ботом'); },
   endSession: async () => {
     const n = S.room.room.session;
-    if (!(await confirmBox(`Завершити сесію ${n}? Журнал сесії прийде тобі файлом .txt у чат із ботом, гравці отримають сповіщення.`))) return;
+    if (!(await confirmBox(`Завершити сесію ${n}? Активні події завершаться. Усе стиснеться до підсумку (рівень, досвід, гроші, предмети, ХП, натхнення, події) — він прийде тобі файлом у чат із ботом, гравці отримають сповіщення. Детальний журнал і кидки сесії буде видалено: якщо він потрібен, спершу надішли його з «📜 Журнал».`))) return;
     const r = await run(() => api('endSession', { roomId: roomId() }));
     if (r) {
-      toast(r.sent ? `🏁 Сесію ${n} завершено. Журнал надіслано в чат.` : `Сесію завершено, але файл не надіслано — натисни Start у чаті з ботом і надішли журнал повторно.`, !r.sent);
+      toast(r.sent ? `🏁 Сесію ${n} завершено. Підсумок надіслано в чат.` : `Сесію завершено, але файл не надіслано — натисни Start у чаті з ботом. Підсумок збережено в «📜 Журнал → Увесь журнал».`, !r.sent);
       await loadRoom(true);
       if (cur().view === 'log') { S.log = null; render(); loadLog(); }
     }
@@ -2895,6 +2907,18 @@ function showTip(el, title, html) {
   $tip.style.top = `${below + hgt > window.innerHeight - 8 && r.top - hgt - 8 > 8 ? r.top - hgt - 8 : Math.min(below, window.innerHeight - hgt - 8)}px`;
 }
 function hideTip() { $tip.hidden = true; }
+// на пристроях з мишкою підказка до значка події з'являється при наведенні
+if (window.matchMedia && window.matchMedia('(hover: hover)').matches) {
+  let tipEl = null;
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest && e.target.closest('[data-act=evTip]');
+    if (el && el !== tipEl) { tipEl = el; ACT.evTip({ ...el.dataset }, el); }
+  });
+  document.addEventListener('mouseout', (e) => {
+    const el = e.target.closest && e.target.closest('[data-act=evTip]');
+    if (el && el === tipEl && !el.contains(e.relatedTarget)) { tipEl = null; hideTip(); }
+  });
+}
 
 const RO_BLOCK = new Set(['slot', 'res', 'poolModal', 'togglePrep', 'spellForm', 'spellPick', 'spSave', 'spToggle', 'spPrep', 'editText', 'hpModal', 'insp', 'moneyModal', 'equip', 'attune', 'useItem',
   'dropItem', 'giveItemModal', 'openLevelUp', 'spendHD', 'endRest', 'featureForm', 'delFeature', 'fillFeatures', 'saveSpell', 'deleteSpell']);

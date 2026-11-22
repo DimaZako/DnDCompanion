@@ -42,6 +42,12 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS event_members (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, char_id INTEGER NOT NULL, joined_at INTEGER NOT NULL, left_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS idx_event_members ON event_members(event_id)`,
   `CREATE INDEX IF NOT EXISTS idx_event_members_char ON event_members(char_id)`,
+  // стан персонажа на початку сесії (рівень, досвід, гроші, предмети…) — для підсумку сесії
+  `CREATE TABLE IF NOT EXISTS char_snaps (char_id INTEGER NOT NULL, session INTEGER NOT NULL, room_id TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (char_id, session))`,
+  `CREATE INDEX IF NOT EXISTS idx_char_snaps_room ON char_snaps(room_id, session)`,
+  // стислий підсумок завершеної сесії (детальний журнал після завершення видаляється)
+  `CREATE TABLE IF NOT EXISTS session_summaries (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, session INTEGER NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_session_summaries ON session_summaries(room_id, session)`,
 ];
 const DICE_SIDES = [4, 6, 8, 10, 12, 20, 100];
 const DICE_HISTORY = 15;
@@ -694,12 +700,15 @@ async function buildLogTxt(c, room, session) {
   lines.push(session ? L(`Сесія ${session}`) : L('Повний журнал'));
   lines.push(L(`Сформовано: ${fmt(now(), true)}`));
   lines.push('='.repeat(48));
-  let cur = null;
-  for (const r of rows) {
-    if (!session && r.session !== cur) { cur = r.session; lines.push('', L(`--- Сесія ${cur} ---`)); }
-    lines.push(`[${fmt(r.ts, true)}] ${L(r.actor)}: ${L(r.text)}`);
+  const sums = session ? [] : await roomSummaries(c, room);
+  const sessions = [...new Set([...rows.map((r) => r.session), ...sums.map((x) => x.session)])].sort((a, b) => a - b);
+  for (const ss of session ? [session] : sessions) {
+    if (!session) lines.push('', L(`--- Сесія ${ss} ---`));
+    // завершена сесія — підсумок; поточна (і старі, завершені до появи підсумків) — записи журналу
+    for (const x of sums.filter((y) => y.session === ss)) lines.push(...renderSummary(c.user.lang, room, x.data).slice(1));
+    for (const r of rows.filter((y) => y.session === ss)) lines.push(`[${fmt(r.ts, true)}] ${L(r.actor)}: ${L(r.text)}`);
   }
-  if (!rows.length) lines.push(L('(записів немає)'));
+  if (!rows.length && !sums.length) lines.push(L('(записів немає)'));
   return lines.join('\r\n');
 }
 
@@ -912,7 +921,7 @@ async function buildEventTxt(c, room, ev, st) {
   return out.join('\n');
 }
 // Завершити активну подію кімнати й надіслати звіт майстрові
-async function finishEvent(c, room, ev) {
+async function finishEvent(c, room, ev, { silent = false } = {}) {
   if (!ev || ev.ended_at) return { sent: false };
   await addLog(c, room, `завершив подію «${ev.name}»`, undefined, ev.id);
   const ts = now();
@@ -921,11 +930,127 @@ async function finishEvent(c, room, ev) {
   await run(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', room.id);
   c.evc = null;
   ev.ended_at = ts;
+  // під час завершення сесії окремий звіт не надсилається — подія входить у підсумок сесії
+  if (silent) return { sent: false, name: ev.name };
   const st = await eventStats(c, ev);
   const txt = await buildEventTxt(c, room, ev, st);
   const fname = `podiia_${ev.num}_${ev.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}.txt`;
   const r = await sendDocument(c.env, c.user.id, fname, txt, tr(c.user.lang, `📊 Подія «${ev.name}» завершена`));
   return { sent: !!r.ok, name: ev.name };
+}
+
+// ---------- Підсумок сесії ----------
+// Стан персонажа: рівень, досвід, гроші, ХП, натхнення, предмети (назва → кількість)
+async function charState(c, row) {
+  const sh = typeof row.sheet === 'string' ? JSON.parse(row.sheet) : row.sheet;
+  const items = {};
+  for (const it of await all(c.db, 'SELECT data, qty FROM items WHERE char_id = ? ORDER BY id', row.id)) {
+    const n = JSON.parse(it.data).name || '?';
+    items[n] = (items[n] || 0) + it.qty;
+  }
+  const money = {};
+  for (const k of R.COINS) if (sh.money && sh.money[k]) money[k] = sh.money[k];
+  return { level: sh.level, xp: sh.xp || 0, money, hp: [sh.hp ? sh.hp.cur : 0, sh.hp ? sh.hp.max : 0], insp: R.inspCount(sh), items };
+}
+async function snapChar(c, room, row, extra) {
+  const st = await charState(c, row);
+  await run(c.db, 'INSERT OR IGNORE INTO char_snaps (char_id, session, room_id, ts, data) VALUES (?, ?, ?, ?, ?)',
+    row.id, room.session, room.id, now(), JSON.stringify(extra ? { ...st, ...extra } : st));
+}
+// Знімок «на початку сесії» для кожного живого персонажа кімнати, якого ще немає
+async function ensureSnaps(c, room) {
+  const rows = await all(c.db, `SELECT ch.id, ch.sheet FROM characters ch WHERE ch.room_id = ? AND ch.alive = 1
+    AND NOT EXISTS (SELECT 1 FROM char_snaps s WHERE s.char_id = ch.id AND s.session = ?)`, room.id, room.session);
+  for (const r of rows) await snapChar(c, room, r);
+}
+// Позначка в знімку сесії: died / revived
+async function snapMark(c, room, charId, key) {
+  await run(c.db, `UPDATE char_snaps SET data = json_set(data, '$.${key}', COALESCE(json_extract(data, '$.${key}'), 0) + 1) WHERE char_id = ? AND session = ?`, charId, room.session);
+}
+async function buildSessionSummary(c, room) {
+  const ts = now();
+  await ensureSnaps(c, room);
+  const snaps = await all(c.db, 'SELECT * FROM char_snaps WHERE room_id = ? AND session = ? ORDER BY char_id', room.id, room.session);
+  const chars = [];
+  for (const sn of snaps) {
+    const row = await first(c.db, 'SELECT ch.id, ch.alive, ch.sheet, u.first_name FROM characters ch LEFT JOIN users u ON u.id = ch.user_id WHERE ch.id = ?', sn.char_id);
+    if (!row) continue;
+    const a = JSON.parse(sn.data);
+    const sh = JSON.parse(row.sheet);
+    chars.push({ id: row.id, name: sh.name, player: row.first_name || '', raceId: sh.raceId, raceName: sh.raceName || '', classId: sh.classId,
+      alive: !!row.alive, created: !!a.created, died: a.died || 0, revived: a.revived || 0,
+      start: { level: a.level, xp: a.xp, money: a.money || {}, insp: a.insp || 0, items: a.items || {} }, end: await charState(c, row) });
+  }
+  // події сесії; ті, що перетекли в іншу, — всередині неї
+  const evs = await all(c.db, 'SELECT * FROM events WHERE room_id = ? AND session = ? ORDER BY started_at, id', room.id, room.session);
+  const events = [];
+  for (const ev of evs.filter((e) => !e.merged_into)) {
+    const parts = evs.filter((e) => e.merged_into === ev.id);
+    const names = (await all(c.db, `SELECT ch.sheet FROM characters ch WHERE ch.id IN (SELECT DISTINCT char_id FROM event_members WHERE event_id = ?) ORDER BY ch.id`, ev.id))
+      .map((r) => JSON.parse(r.sheet).name);
+    events.push({ name: ev.name, type: ev.type, start: Math.min(ev.started_at, ...parts.map((p) => p.started_at)), end: ev.ended_at || ts,
+      merged: parts.map((p) => ({ name: p.name, type: p.type, start: p.started_at })), members: names });
+  }
+  const fl = await first(c.db, 'SELECT MIN(ts) AS t FROM logs WHERE room_id = ? AND session = ?', room.id, room.session);
+  return { v: 1, session: room.session, start: (fl && fl.t) || ts, end: ts, chars, events };
+}
+// Текст підсумку мовою користувача (рядки)
+function renderSummary(lang, room, sm) {
+  const L = (x) => tr(lang, x);
+  const loc = LOCALES[normLang(lang)];
+  const tz = 'Europe/Kyiv';
+  const fmt = (t, withDate) => new Date(t * 1000).toLocaleString(loc, withDate
+    ? { timeZone: tz, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+    : { timeZone: tz, hour: '2-digit', minute: '2-digit' });
+  const ms = (m) => R.COINS.filter((k) => m[k]).map((k) => `${m[k]} ${R.COIN_NAMES[k]}`).join(', ') || `0 ${R.COIN_NAMES.gp}`;
+  const mins = Math.max(1, Math.round((sm.end - sm.start) / 60));
+  const dur = mins >= 60 ? L(`${Math.floor(mins / 60)} год ${mins % 60} хв`) : L(`${mins} хв`);
+  const out = [];
+  out.push(L(`DnD Companion — підсумок сесії ${sm.session}`));
+  out.push(L(`Кімната «${room.name}» (код ${room.id})`));
+  out.push(L(`Початок: ${fmt(sm.start, true)} · кінець: ${fmt(sm.end, true)} · тривалість: ${dur}`));
+  out.push('', L('=== Персонажі ==='));
+  if (!sm.chars.length) out.push(L('(персонажів немає)'));
+  for (const x of sm.chars) {
+    const race = x.raceId === 'custom' ? x.raceName : (R.RACES[x.raceId] || {}).name || '';
+    const cls = (R.CLASSES[x.classId] || {}).name || '';
+    out.push('', `${x.name}${x.player ? ` (${x.player})` : ''} — ${L(race)}, ${L(cls)}`);
+    const a = x.start;
+    const b = x.end;
+    const lines = [];
+    if (x.created) lines.push('🆕 Новий персонаж — створено в цій сесії');
+    if (x.died) lines.push('☠ Загинув у цій сесії');
+    if (x.revived) lines.push('✨ Повернений до життя');
+    lines.push(a.level === b.level ? `Рівень: ${b.level}` : a.level < b.level ? `Рівень: підвищення рівня ${a.level}–${b.level}` : `Рівень: ${a.level} → ${b.level}`);
+    lines.push(a.xp === b.xp ? `Досвід: ${b.xp}` : `Досвід: ${a.xp} → ${b.xp}`);
+    const same = R.COINS.every((k) => (a.money[k] || 0) === (b.money[k] || 0));
+    lines.push(same ? `Гроші: ${ms(b.money)}` : `Гроші: почав з ${ms(a.money)} — на кінець сесії має ${ms(b.money)}`);
+    const names = [...new Set([...Object.keys(a.items), ...Object.keys(b.items)])];
+    const iq = (n, q) => `${L(n)}${q > 1 ? ` ×${q}` : ''}`;
+    const got = names.filter((n) => (b.items[n] || 0) > (a.items[n] || 0)).map((n) => iq(n, (b.items[n] || 0) - (a.items[n] || 0)));
+    const lost = names.filter((n) => (a.items[n] || 0) > (b.items[n] || 0)).map((n) => iq(n, (a.items[n] || 0) - (b.items[n] || 0)));
+    if (got.length) lines.push(`Отримав предмети: ${got.join(', ')}`);
+    if (lost.length) lines.push(`Втратив або використав: ${lost.join(', ')}`);
+    if (!got.length && !lost.length) lines.push('Предмети: без змін');
+    lines.push(`ХП: ${b.hp[0]}/${b.hp[1]}`);
+    if (a.insp !== b.insp) lines.push(`Натхнення: ${a.insp} → ${b.insp}`);
+    else if (b.insp) lines.push(`Натхнення: ${b.insp}`);
+    for (const l of lines) out.push(`  ${L(l)}`);
+  }
+  if (sm.events.length) {
+    out.push('', L('=== Події сесії ==='));
+    for (const ev of sm.events) {
+      const [tn, ti] = R.EVENT_TYPES[ev.type] || R.EVENT_TYPES.other;
+      // назва за замовчуванням («Подія 2») перекладається, назву майстра — як є
+      out.push('', `${ti} ${/^Подія \d+$/.test(ev.name) ? L(ev.name) : ev.name} — ${L(tn).toLowerCase()}, ${fmt(ev.start)}–${fmt(ev.end)}`);
+      for (const m of ev.merged) out.push(`  ${L(`Включає подію «${m.name}» (${evTypeName(m.type).toLowerCase()}, з ${fmt(m.start)})`)}`);
+      if (ev.members.length) out.push(`  ${L(`Учасники: ${ev.members.join(', ')}`)}`);
+    }
+  }
+  return out;
+}
+async function roomSummaries(c, room) {
+  return (await all(c.db, 'SELECT * FROM session_summaries WHERE room_id = ? ORDER BY session', room.id)).map((r) => ({ id: r.id, session: r.session, ts: r.ts, data: JSON.parse(r.data) }));
 }
 
 const OPS = {
@@ -1051,6 +1176,7 @@ const OPS = {
     const master = await first(c.db, 'SELECT first_name FROM users WHERE id = ?', room.master_id);
     const base = { id: room.id, name: room.name, session: room.session, version: room.version || 0, maxStartLevel: room.max_start_level || 1, masterName: master ? master.first_name : '' };
     const evs = await activeEvents(c, room);
+    await ensureSnaps(c, room);
     const evBrief = (ev) => ({ id: ev.id, name: ev.name, type: ev.type, startedAt: ev.started_at, members: ev.members });
     if (room.master_id === c.user.id) {
       const members = await all(c.db, `SELECT m.user_id, m.joined_at, m.help_req, m.last_roll, u.first_name, u.username FROM members m
@@ -1331,6 +1457,8 @@ const OPS = {
     await run(c.db, 'UPDATE members SET help_req = NULL WHERE room_id = ? AND user_id = ?', room.id, tgt.uid);
     const newId = r.meta && r.meta.last_row_id;
     if (items.length) await giveStartItems(c, newId, sheet, items);
+    // стан «на початку сесії» для нового персонажа — одразу після створення (зі стартовим спорядженням)
+    await snapChar(c, room, { id: newId, sheet }, { created: 1 });
     const methodName = { standard: 'стандартний набір', pointbuy: 'купівля очками', roll: 'кидок кубиків' }[method];
     await addLog(c, room, `створив персонажа ${sheet.name}: ${R.RACES[sheet.raceId].name}, ${R.CLASSES[sheet.classId].name}${sheet.subclass ? ` (${sheet.subclass})` : ''} ${level} рів. (${methodName}; ${R.ABILITIES.map((a) => `${R.ABILITY_SHORT[a]} ${sheet.abilities[a]}`).join(', ')})${equipNote ? `; ${equipNote}` : ''}`);
     if (tgt.helper) {
@@ -1743,7 +1871,11 @@ const OPS = {
       const other = await first(c.db, 'SELECT 1 AS x FROM characters WHERE room_id = ? AND user_id = ? AND alive = 1', room.id, ch.userId);
       if (other) fail('У гравця вже є інший живий персонаж');
     }
+    // смерть і повернення до життя — у підсумок сесії
+    if (want) await snapChar(c, room, { id: ch.id, sheet: ch.sheet });
+    else await ensureSnaps(c, room);
     await run(c.db, 'UPDATE characters SET alive = ?, updated_at = ? WHERE id = ?', want ? 1 : 0, now(), ch.id);
+    await snapMark(c, room, ch.id, want ? 'revived' : 'died');
     await addLog(c, room, want ? `повернув до життя ${ch.sheet.name}` : `☠ ${ch.sheet.name} загинув`);
     notify(c, ch.userId, want
       ? `✨ Майстер повернув до життя ${ch.sheet.name}!`
@@ -1797,7 +1929,13 @@ const OPS = {
     const rows = wantAll
       ? await all(c.db, 'SELECT * FROM logs WHERE room_id = ? ORDER BY id DESC LIMIT 500', room.id)
       : await all(c.db, 'SELECT * FROM logs WHERE room_id = ? AND session = ? ORDER BY id DESC LIMIT 500', room.id, room.session);
-    return { session: room.session, entries: rows.map((r) => ({ id: r.id, ts: r.ts, session: r.session, actor: r.actor, text: r.text })) };
+    const entries = rows.map((r) => ({ id: r.id, ts: r.ts, session: r.session, actor: r.actor, text: r.text }));
+    // завершені сесії — стислим підсумком (детальний журнал після завершення видаляється)
+    if (wantAll) {
+      for (const sm of await roomSummaries(c, room)) entries.push({ id: `s${sm.id}`, ts: sm.ts, session: sm.session, summary: renderSummary(c.user.lang, room, sm.data) });
+      entries.sort((x, y) => y.session - x.session || (y.summary ? 1 : 0) - (x.summary ? 1 : 0) || y.ts - x.ts);
+    }
+    return { session: room.session, entries };
   },
 
   async exportLog(c, { roomId, all: wantAll }) {
@@ -1809,18 +1947,34 @@ const OPS = {
     return { sent: true };
   },
 
+  // Завершення сесії: активні події закриваються, усе стискається до підсумку (рівень, досвід, гроші, предмети, ХП, натхнення,
+  // смерті + перелік подій). Підсумок зберігається й приходить майстрові одним файлом, а детальний журнал, кидки й записи подій видаляються.
   async endSession(c, { roomId }) {
     const room = await requireMaster(c, roomId);
-    // активна подія завершується разом із сесією (звіт приходить окремим файлом)
-    for (const ev of await activeEvents(c, room)) await finishEvent(c, room, ev);
-    await addLog(c, room, `завершив сесію ${room.session}`);
-    const txt = await buildLogTxt(c, room, room.session);
-    const fname = `${room.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}_sesiia_${room.session}.txt`;
-    const r = await sendDocument(c.env, c.user.id, fname, txt, tr(c.user.lang, `📜 Журнал «${room.name}», сесія ${room.session}`));
-    await run(c.db, 'UPDATE rooms SET session = session + 1 WHERE id = ?', room.id);
+    for (const ev of await activeEvents(c, room)) await finishEvent(c, room, ev, { silent: true });
+    const sm = await buildSessionSummary(c, room);
+    await run(c.db, 'INSERT INTO session_summaries (room_id, session, ts, data) VALUES (?, ?, ?, ?)', room.id, room.session, sm.end, JSON.stringify(sm));
+    const txt = renderSummary(c.user.lang, room, sm).join('\r\n');
+    const fname = `${room.name.replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 40)}_pidsumok_sesii_${room.session}.txt`;
+    const r = await sendDocument(c.env, c.user.id, fname, txt, tr(c.user.lang, `📜 Підсумок сесії ${room.session} «${room.name}»`));
+    const evq = 'SELECT id FROM events WHERE room_id = ? AND session = ?';
+    await c.db.batch([
+      q(c.db, 'DELETE FROM logs WHERE room_id = ? AND session = ?', room.id, room.session),
+      q(c.db, `DELETE FROM event_acts WHERE event_id IN (${evq})`, room.id, room.session),
+      q(c.db, `DELETE FROM event_members WHERE event_id IN (${evq})`, room.id, room.session),
+      q(c.db, 'DELETE FROM events WHERE room_id = ? AND session = ?', room.id, room.session),
+      // гравцям лишається лише історія останніх кидків на листі
+      q(c.db, `DELETE FROM dice_rolls WHERE room_id = ? AND id NOT IN (SELECT id FROM
+        (SELECT id, ROW_NUMBER() OVER (PARTITION BY char_id ORDER BY id DESC) AS rn FROM dice_rolls WHERE room_id = ?) WHERE rn <= ?)`, room.id, room.id, DICE_HISTORY),
+      q(c.db, 'DELETE FROM char_snaps WHERE room_id = ? AND session = ?', room.id, room.session),
+      q(c.db, 'UPDATE rooms SET session = session + 1, version = version + 1 WHERE id = ?', room.id),
+    ]);
+    room.session += 1;
+    c.evc = null;
+    await ensureSnaps(c, room);
     const members = await all(c.db, 'SELECT user_id FROM members WHERE room_id = ?', room.id);
     for (const m of members) notify(c, m.user_id, `🏁 «${room.name}»\nНа сьогодні подорож завершена... До наступної зустрічі!`);
-    return { sent: !!r.ok, session: room.session + 1 };
+    return { sent: !!r.ok, session: room.session };
   },
 };
 
