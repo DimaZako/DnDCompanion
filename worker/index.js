@@ -48,10 +48,40 @@ const SCHEMA = [
   // стислий підсумок завершеної сесії (детальний журнал після завершення видаляється)
   `CREATE TABLE IF NOT EXISTS session_summaries (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, session INTEGER NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_session_summaries ON session_summaries(room_id, session)`,
+  // ефекти (стани) на персонажах: key — стандартний ефект із правил, data — назва/значок (+опис для своїх), n + unit — скільки лишилось
+  `CREATE TABLE IF NOT EXISTS char_effects (id INTEGER PRIMARY KEY AUTOINCREMENT, char_id INTEGER NOT NULL, room_id TEXT NOT NULL, key TEXT, data TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, unit TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_char_effects ON char_effects(char_id)`,
+  // власні ефекти майстра (каталог, спільний для всіх його кімнат)
+  `CREATE TABLE IF NOT EXISTS master_effects (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL, data TEXT NOT NULL, created_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS idx_master_effects_owner ON master_effects(owner_id)`,
 ];
 const DICE_SIDES = [4, 6, 8, 10, 12, 20, 100];
 const DICE_HISTORY = 15;
 const MAX_MY_ITEMS = 500;
+const MAX_MY_EFFECTS = 200;
+const MAX_CHAR_EFFECTS = 30;
+// Тривалість ефекту текстом (журнал; перекладається за словником)
+const FX_UNITS_UK = { round: ['раунд', 'раунди', 'раундів'], min: ['хвилина', 'хвилини', 'хвилин'], hour: ['година', 'години', 'годин'], day: ['день', 'дні', 'днів'] };
+const slavForm = (n, f) => { const a = n % 10; const b = n % 100; return f[a === 1 && b !== 11 ? 0 : a >= 2 && a <= 4 && (b < 10 || b >= 20) ? 1 : 2]; };
+const fxDur = (n, unit) => (unit === 'perm' ? 'до зняття' : unit === 'lvl' ? `рівень ${n}` : `${n} ${slavForm(n, FX_UNITS_UK[unit] || FX_UNITS_UK.round)}`);
+function fxDuration(n, unit, def) {
+  if (def && def.def && def.def.unit === 'lvl') return { n: int(n, 1, def.max || 6, 1), unit: 'lvl' };
+  const u = R.EFFECT_UNITS.includes(unit) ? unit : 'round';
+  return u === 'perm' ? { n: 0, unit: 'perm' } : { n: int(n, 1, 999, 1), unit: u };
+}
+function sanitizeEffect(e) {
+  e = e && typeof e === 'object' ? e : {};
+  const name = str(e.name, 60).trim();
+  if (!name) fail('Вкажи назву ефекту');
+  const icon = [...str(e.icon, 16).trim()].slice(0, 4).join('') || '✨';
+  const def = e.def && typeof e.def === 'object' ? fxDuration(e.def.n, e.def.unit) : { n: 10, unit: 'round' };
+  return { name, icon, desc: str(e.desc, 1500).trim(), def };
+}
+async function loadEffects(c, ids) {
+  if (!ids.length) return [];
+  return (await all(c.db, 'SELECT * FROM char_effects WHERE char_id IN (SELECT value FROM json_each(?)) ORDER BY id', JSON.stringify(ids)))
+    .map((r) => ({ id: r.id, charId: r.char_id, key: r.key, n: r.n, unit: r.unit, ...JSON.parse(r.data) }));
+}
 
 const MAX_PLAYERS = 10;
 const MAX_ATTUNED = 3;
@@ -358,6 +388,7 @@ async function loadItems(c, charIds) {
 }
 async function fullChar(c, ch) {
   ch.items = await loadItems(c, [ch.id]);
+  ch.effects = await loadEffects(c, [ch.id]);
   ch.rolls = (await all(c.db, 'SELECT id, ts, data, miss FROM dice_rolls WHERE char_id = ? ORDER BY id DESC LIMIT ?', ch.id, DICE_HISTORY))
     .map((r) => ({ id: r.id, ts: r.ts, mark: r.miss || 0, ...JSON.parse(r.data) }));
   return ch;
@@ -1202,6 +1233,8 @@ const OPS = {
       const alive = chars.filter((ch) => ch.alive);
       const items = await loadItems(c, alive.map((ch) => ch.id));
       for (const ch of alive) ch.items = items.filter((it) => it.charId === ch.id);
+      const fxs = await loadEffects(c, alive.map((ch) => ch.id));
+      for (const ch of alive) ch.effects = fxs.filter((e) => e.charId === ch.id);
       const players = members.map((m) => {
         const character = alive.filter((ch) => ch.userId === m.user_id).pop() || null;
         const helpRequested = !character && !!m.help_req;
@@ -1285,6 +1318,85 @@ const OPS = {
   },
   async deleteMyItem(c, { id }) {
     await run(c.db, 'DELETE FROM master_items WHERE id = ? AND owner_id = ?', int(id, 0, 1e12, 0), c.user.id);
+  },
+
+  // ----- Ефекти: каталог майстра -----
+  async myEffects(c) {
+    const rows = await all(c.db, 'SELECT id, data FROM master_effects WHERE owner_id = ? ORDER BY id DESC', c.user.id);
+    return { effects: rows.map((r) => ({ id: r.id, data: JSON.parse(r.data) })) };
+  },
+  async saveMyEffect(c, { id, effect }) {
+    const data = sanitizeEffect(effect);
+    if (id) {
+      const r = await run(c.db, 'UPDATE master_effects SET data = ? WHERE id = ? AND owner_id = ?', JSON.stringify(data), int(id, 0, 1e12, 0), c.user.id);
+      if (!(r.meta && r.meta.changes)) fail('Ефект не знайдено у твоєму каталозі');
+      return { id: Number(id) };
+    }
+    const n = await first(c.db, 'SELECT COUNT(*) AS n FROM master_effects WHERE owner_id = ?', c.user.id);
+    if (n.n >= MAX_MY_EFFECTS) fail(`У каталозі вже ${MAX_MY_EFFECTS} ефектів — видали непотрібні`);
+    const r = await run(c.db, 'INSERT INTO master_effects (owner_id, data, created_at) VALUES (?, ?, ?)', c.user.id, JSON.stringify(data), now());
+    return { id: r.meta && r.meta.last_row_id };
+  },
+  async deleteMyEffect(c, { id }) {
+    await run(c.db, 'DELETE FROM master_effects WHERE id = ? AND owner_id = ?', int(id, 0, 1e12, 0), c.user.id);
+  },
+
+  // ----- Ефекти на персонажах: накладає й веде майстер (трекера ходу немає — майстер сам зменшує лічильник) -----
+  async addEffect(c, { charId, key, myId, n, unit }) {
+    const { ch, room } = await charAccess(c, charId, { master: true });
+    let data;
+    let def = null;
+    if (key) {
+      def = R.EFFECTS[key];
+      if (!def) fail('Ефект не знайдено');
+      data = { name: def.name, icon: def.icon };
+    } else {
+      const r = await first(c.db, 'SELECT data FROM master_effects WHERE id = ? AND owner_id = ?', int(myId, 0, 1e12, 0), c.user.id);
+      if (!r) fail('Ефект не знайдено у твоєму каталозі');
+      const e = JSON.parse(r.data);
+      data = { name: e.name, icon: e.icon, desc: e.desc, custom: 1 };
+    }
+    const d = fxDuration(n, unit, def);
+    // той самий стандартний ефект не дублюється — оновлюється тривалість (рівень виснаження)
+    const ex = key ? await first(c.db, 'SELECT id FROM char_effects WHERE char_id = ? AND key = ?', ch.id, key) : null;
+    let id;
+    if (ex) {
+      await run(c.db, 'UPDATE char_effects SET n = ?, unit = ? WHERE id = ?', d.n, d.unit, ex.id);
+      id = ex.id;
+    } else {
+      const cnt = await first(c.db, 'SELECT COUNT(*) AS n FROM char_effects WHERE char_id = ?', ch.id);
+      if (cnt.n >= MAX_CHAR_EFFECTS) fail('На персонажі забагато ефектів — зніми зайві');
+      const r = await run(c.db, 'INSERT INTO char_effects (char_id, room_id, key, data, n, unit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ch.id, room.id, key || null, JSON.stringify(data), d.n, d.unit, now());
+      id = r.meta && r.meta.last_row_id;
+    }
+    await addLog(c, room, `наклав ефект «${data.name}» на ${ch.sheet.name} — ${fxDur(d.n, d.unit)}`);
+    return { id, ...d };
+  },
+  // −/+ до лічильника; на нулі ефект знімається
+  async stepEffect(c, { effectId, delta }) {
+    const fx = await first(c.db, 'SELECT * FROM char_effects WHERE id = ?', int(effectId, 0, 1e12, 0));
+    if (!fx) fail('Ефект не знайдено');
+    const { ch, room } = await charAccess(c, fx.char_id, { master: true, alive: false });
+    if (fx.unit === 'perm') fail('Цей ефект діє до зняття');
+    const n = Math.min(fx.unit === 'lvl' ? (R.EFFECTS.exhaustion.max || 6) : 999, fx.n + int(delta, -999, 999, 0));
+    const name = JSON.parse(fx.data).name;
+    if (n <= 0) {
+      await run(c.db, 'DELETE FROM char_effects WHERE id = ?', fx.id);
+      await addLog(c, room, `ефект «${name}» на ${ch.sheet.name} закінчився`);
+      return { removed: true };
+    }
+    await run(c.db, 'UPDATE char_effects SET n = ? WHERE id = ?', n, fx.id);
+    await run(c.db, 'UPDATE rooms SET version = version + 1 WHERE id = ?', room.id);
+    return { n };
+  },
+  async removeEffect(c, { effectId }) {
+    const fx = await first(c.db, 'SELECT * FROM char_effects WHERE id = ?', int(effectId, 0, 1e12, 0));
+    if (!fx) fail('Ефект не знайдено');
+    const { ch, room } = await charAccess(c, fx.char_id, { master: true, alive: false });
+    await run(c.db, 'DELETE FROM char_effects WHERE id = ?', fx.id);
+    await addLog(c, room, `зняв ефект «${JSON.parse(fx.data).name}» з ${ch.sheet.name}`);
+    return { removed: true };
   },
 
   // ---------- Події майстра (можуть іти паралельно; персонаж — в одній події) ----------

@@ -471,3 +471,31 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .cbox-wrap { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, .55); }
 .cbox { width: 100%; max-width: 360px; background: var(--card); border-radius: 16px; padding: 18px 16px 14px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
 .cbox p { margin: 0 0 14px; font-size: 15px; line-height: 1.45; white-space: pre-wrap; }
+
+/* ---------- ефекти (стани) на персонажі ---------- */
+.fx-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.fx { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 12px; background: var(--card);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--fxc) 55%, transparent); --fxc: #8f7cf2; cursor: pointer; font-size: 13px; max-width: 100%; }
+.fx.fx-cond { --fxc: #e0654f; }
+.fx.fx-spell { --fxc: #4f9be0; }
+.fx.fx-custom { --fxc: #b07ce8; }
+.fx-i { font-size: 16px; line-height: 1; }
+.fx-n { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+.fx-left { color: var(--hint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fx-b { width: 26px; height: 26px; border-radius: 8px; background: var(--soft); font-size: 16px; font-weight: 800; line-height: 1; flex: none; color: var(--text); }
+.fx-b.x { font-size: 13px; color: var(--danger); }
+.fx-add { padding: 6px 12px; border-radius: 12px; border: 1.5px dashed color-mix(in srgb, var(--accent) 70%, transparent); color: var(--accent); font-size: 13px; font-weight: 700; }
+.fx-mini { font-size: 14px; letter-spacing: 1px; margin-right: 4px; white-space: nowrap; }
+.fx-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+.fx-pick { padding: 6px 10px; border-radius: 10px; background: var(--soft); font-size: 13px; font-weight: 600; color: var(--text); }
+.fx-pick.on { background: var(--accent); color: var(--accent-text); }
+.fx-sel { margin-top: 10px; }
+.fx-sel p { margin: 6px 0 0; font-size: 13px; line-height: 1.45; }
+.fx-dur { margin-top: 8px; align-items: center; }
+.fx-dur b { min-width: 34px; text-align: center; font-size: 18px; }
+.fx-n-in { width: 70px; text-align: center; }
+.fx-hints { margin: 6px 0 4px; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 10%, var(--soft)); font-size: 13px; line-height: 1.6; }
+.fx-icons { align-items: center; }
+.fx-icon-in { width: 64px; text-align: center; font-size: 18px; padding: 6px; }
+.cat-new { margin-top: 8px; }
+.cat-kind { position: static; margin-top: 10px; }

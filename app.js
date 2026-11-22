@@ -15,7 +15,7 @@ const $busy = document.getElementById('busy');
 
 const S = {
   me: null, nav: [], room: null, modal: null, tab: 'sheet', mtab: 'room', rollLimit: 50, rollFilter: 0, seenRoll: {},
-  wiz: null, newRoom: { name: '', pick: false, max: 5 }, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, log: null, logAll: false, bootError: null,
+  wiz: null, newRoom: { name: '', pick: false, max: 5 }, edit: null, cat: { q: '', group: 'all', rarity: 'all' }, myItems: null, myEffects: null, log: null, logAll: false, bootError: null,
 };
 
 // ================= Допоміжні =================
@@ -440,8 +440,8 @@ const VIEWS = {
       <div class="row mt"><input id="newRoomName" class="grow" data-bind="newRoom.name" value="${esc(S.newRoom.name)}" maxlength="60" placeholder="Назва, напр. «Копальні Фанделвера»">
       <button class="btn primary" data-act="createRoom">Створити</button></div>
       ${startLevelHtml('newRoom.pick', S.newRoom.pick, 'newRoom.max', S.newRoom.max, '')}</div>
-    <div class="card tap list-item" data-act="openMyCatalog"><div class="ava">📦</div><div class="meta"><b>Каталог предметів</b>
-      <small>Предмети D&D 5e і твої власні — спільні для всіх твоїх кімнат</small></div><span class="chev">›</span></div>
+    <div class="card tap list-item" data-act="openMyCatalog"><div class="ava">📦</div><div class="meta"><b>Каталог</b>
+      <small>Предмети й ефекти D&D 5e і твої власні — спільні для всіх твоїх кімнат</small></div><span class="chev">›</span></div>
     <h3 class="sec">Мої кімнати</h3>
     ${rooms.length ? rooms.map((r) => `<div class="card tap list-item" data-act="openRoom" data-id="${esc(r.id)}">
       <div class="ava">🏰</div><div class="meta"><b>${esc(r.name)}</b><small>Код ${esc(r.id)} · гравців ${r.players}/${S.me.maxPlayers} · сесія ${r.session}</small></div><span class="chev">›</span></div>`).join('')
@@ -508,10 +508,52 @@ function eventBanner(d) {
   const [tn, ti] = evType(ev.type);
   return `<div class="ev-banner">${ti} <span>Йде подія:</span> <b>${esc(ev.name)}</b> <small>· ${tn}</small></div>`;
 }
+// ---------- Ефекти (стани) ----------
+const FX_FORMS = {
+  uk: { round: ['раунд', 'раунди', 'раундів'], min: ['хвилина', 'хвилини', 'хвилин'], hour: ['година', 'години', 'годин'], day: ['день', 'дні', 'днів'] },
+  ru: { round: ['раунд', 'раунда', 'раундов'], min: ['минута', 'минуты', 'минут'], hour: ['час', 'часа', 'часов'], day: ['день', 'дня', 'дней'] },
+  en: { round: ['round', 'rounds'], min: ['minute', 'minutes'], hour: ['hour', 'hours'], day: ['day', 'days'] },
+};
+const FX_UNIT_NAMES = [['round', 'Раунди'], ['min', 'Хвилини'], ['hour', 'Години'], ['day', 'Дні'], ['perm', 'До зняття']];
+const FX_ICONS = ['✨', '🔥', '❄️', '⚡', '☠️', '🩸', '💀', '🌀', '🛡️', '🎯', '😵', '🌑', '💚', '🕸️', '🍄', '👁️', '🧪', '🪄'];
+// скільки лишилось — уже мовою інтерфейсу (з правильною формою множини)
+function fxLeft(e) {
+  if (e.unit === 'perm') return t('до зняття');
+  if (e.unit === 'lvl') return t(`рівень ${e.n}`);
+  const f = (FX_FORMS[LANG] || FX_FORMS.uk)[e.unit] || FX_FORMS.uk.round;
+  if (LANG === 'en') return `${e.n} ${f[e.n === 1 ? 0 : 1]}`;
+  const a = e.n % 10;
+  const b = e.n % 100;
+  return `${e.n} ${f[a === 1 && b !== 11 ? 0 : a >= 2 && a <= 4 && (b < 10 || b >= 20) ? 1 : 2]}`;
+}
+const fxDef = (e) => (e.key && R.EFFECTS[e.key]) || null;
+const fxView = (e) => { const d = fxDef(e); return d ? { ...d, std: true } : { g: 'custom', icon: e.icon, name: e.name, desc: e.desc, std: false }; };
+// Ефекти під рядком КЗ · Хіти · Ініціатива…: у гравця — назва й скільки лишилось, у майстра — ще − / + і «Додати статус»
+function effectsBlock(ch, M, RO) {
+  const fx = ch.effects || [];
+  const ctl = M && !RO;
+  if (!fx.length && !ctl) return '';
+  return `<div class="fx-row">${fx.map((e) => {
+    const d = fxView(e);
+    const perm = e.unit === 'perm';
+    return `<div class="fx fx-${d.g}" data-act="fxInfo" data-id="${e.id}"><span class="fx-i">${esc(d.icon)}</span><span class="fx-n"${d.std ? '' : ' data-notr'}>${esc(d.name)}</span>
+      ${ctl && !perm ? `<button class="fx-b" data-act="fxStep" data-id="${e.id}" data-d="-1" aria-label="${esc(t('Менше'))}">−</button>` : ''}<span class="fx-left" data-notr>${esc(fxLeft(e))}</span>${ctl && !perm ? `<button class="fx-b" data-act="fxStep" data-id="${e.id}" data-d="1" aria-label="${esc(t('Більше'))}">+</button>` : ''}${ctl && perm ? `<button class="fx-b x" data-act="fxRemove" data-id="${e.id}" aria-label="${esc(t('Зняти статус'))}">✕</button>` : ''}</div>`;
+  }).join('')}${ctl ? '<button class="fx-add" data-act="fxAddModal">＋ Додати статус</button>' : ''}</div>`;
+}
+// Підказки у вкладці кидків: як ефекти впливають на обраний кидок
+function fxHints(ch, purpose) {
+  const fr = R.effectRoll(ch.effects, purpose);
+  if (!fr.hints.length) return '';
+  return `<div class="fx-hints">${fr.hints.map((x) => `<div><span>${x.icon}</span> <span>${esc(x.name)}</span> → <b>${x.mode === 'adv' ? '<span>перевага</span>' : x.mode === 'dis' ? '<span>перешкода</span>' : x.mode === 'fail' ? '<span>автоматичний провал</span>' : `<span>${esc(x.note)}</span>`}</b></div>`).join('')}
+    ${fr.cancel ? '<div class="hint">Перевага й перешкода взаємно скасовуються</div>' : ''}</div>`;
+}
+
 // Позначки майстра для кидка: атака й шкода — попадання / промах, решта — успіх / провал
 const HIT_KINDS = ['attack', 'spellattack', 'damage'];
 const markNames = (r) => (HIT_KINDS.includes(r.kind) ? ['Попадання', 'Промах'] : ['Успіх', 'Провал']);
 function markBtns(r, compact) {
+  // шкода позначок не має: попадання відмічається на кидку атаки, шкода рахується завжди
+  if (r.kind === 'damage') return compact ? '' : '<span class="grow"></span>';
   const [ok, no] = markNames(r);
   const b = (cls, m, sym, name) => `<button class="ev-mk ${cls}${r.mark === m ? ' on' : ''}" data-act="rollMark" data-id="${r.id}" data-m="${r.mark === m ? 0 : m}"
     aria-label="${esc(t(name))}" title="${esc(t(name))}">${sym}${compact ? '' : ` <span>${name}</span>`}</button>`;
@@ -579,7 +621,7 @@ function eventCard(d, ev, many) {
       ${combat || x.dealt ? `<button class="btn sm" data-act="eventAdjModal" data-id="${x.charId}" data-name="${esc(x.name)}">± шкода</button>` : ''}</div>`).join('')
     : '<div class="ln hint">Учасників немає</div>'}
     ${rolls.length ? `<button class="link mt" data-act="eventRolls" data-id="${ev.id}">${open ? '▾' : '▸'} Кидки події (${rolls.length})</button>
-    ${open ? `<div class="hint ev-legend">Познач ✓ попадання / успіх чи ✗ промах / провал — це буде у звіті. Кидок шкоди з позначкою «Промах» не рахується.</div>
+    ${open ? `<div class="hint ev-legend">Познач ✓ попадання / успіх чи ✗ промах / провал — це буде у звіті.</div>
     ${rolls.map((r) => `<div class="ln ev-roll${r.kind === 'damage' && r.mark === 1 ? ' miss' : ''}"><span class="grow">${esc(r.name)} · <span>${esc(r.label)}</span></span>
       <b class="v${r.crit === 20 ? ' c20' : r.crit === 1 ? ' c1' : ''}">${r.total}</b>${markBtns(r, true)}</div>`).join('')}` : ''}` : ''}
     <div class="btns mt"><button class="btn sm" data-act="eventMembersModal" data-id="${ev.id}">👥 Учасники</button>
@@ -640,6 +682,7 @@ function playerCard(p) {
     <div class="meta"><b>${esc(s.name)}</b><small>${esc(raceName(s))} · ${esc(className(s))} ${s.level} рів. · ${esc(p.name)}</small></div>
     <div class="center"><small>${ab('КЗ')}</small><div><b>${dv.ac}</b></div></div><span class="chev">›</span></div>
     <div class="row mt" style="margin-top:8px"><small class="grow">ХП ${s.hp.cur}/${s.hp.max}${s.hp.temp ? ` (+${s.hp.temp})` : ''}</small>
+    ${(ch.effects || []).length ? `<span class="fx-mini" title="${esc(ch.effects.map((e) => t(fxView(e).name)).join(', '))}">${ch.effects.map((e) => esc(fxView(e).icon)).join('')}</span>` : ''}
     ${pev ? `<span class="badge red ev-badge" data-act="evTip" data-id="${pev.id}">${evType(pev.type)[1]} <span data-notr>${esc(pev.name)}</span></span>` : ''}
     ${s.targetLevel > s.level ? `<span class="badge gold">⬆️ очікує ${s.targetLevel} рів.</span>` : ''}${R.shortRestActive(s, nowSec()) ? ' <span class="badge green">☕</span>' : ''}${R.inspCount(s) ? ` <span class="badge gold">⭐ ${R.inspCount(s)}</span>` : ''}</div>
     <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div></div>`;
@@ -679,7 +722,8 @@ function charHtml(ch, M) {
     <div class="stat"><small>${ab('Ініціат.')}</small><b>${fm(dv.init)}</b></div>
     <div class="stat"><small>${ab('Швидк.')}</small><b>${s.speed}</b></div>
     <div class="stat"><small>${ab('Майст.')}</small><b>${fm(dv.prof)}</b></div></div>
-  <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div>`;
+  <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div>
+  ${effectsBlock(ch, M, RO)}`;
   if (RO) h += '<div class="card"><small class="hint">📚 Персонаж зберігається на пам’ять — лише перегляд, використати повторно не можна.</small></div>';
   if (!RO && s.targetLevel > s.level) {
     h += M ? `<div class="card"><span class="badge gold">⬆️ Гравцю доступне підвищення до ${s.targetLevel} рівня</span></div>`
@@ -774,6 +818,9 @@ const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString(LOCALES[LANG], { 
 function diceTab(ch, dv) {
   const s = ch.sheet;
   const st = diceState(ch);
+  // ефекти змінились (майстер наклав/зняв) — перевага/перешкода перераховується
+  const sig = (ch.effects || []).map((e) => `${e.key}:${e.n}`).join();
+  if (st.fxSig !== sig) { st.fxSig = sig; st.mode = R.effectRoll(ch.effects, st.purpose).mode; }
   const auto = diceAuto(ch, st.purpose);
   const opt = (v, l) => `<option value="${esc(v)}" ${st.purpose === v ? 'selected' : ''}>${esc(l)}</option>`;
   const og = (label, items) => (items.length ? `<optgroup label="${esc(t(label))}">${items.map(([v, l]) => opt(v, l)).join('')}</optgroup>` : '');
@@ -791,6 +838,7 @@ function diceTab(ch, dv) {
   const any = DICE.some((sd) => st.dice[sd]);
   let h = `<div class="lines dice-box"><h3>🎲 Кидок</h3>
     <label class="fld"><span>На що</span>${sel}</label>
+    ${fxHints(ch, st.purpose)}
     <div class="fld"><span>Кубики</span></div>
     <div class="dice-grid">${DICE.map((sd) => {
     const n = st.dice[sd] || 0;
@@ -1643,10 +1691,31 @@ function catalogListHtml() {
   return list.map((it) => `<div class="item rc-${esc(it.rarity)}" data-act="catPick" data-id="${esc(it.catalogId)}"><span class="ic">${ITEM_ICON[it.type] || '📦'}</span>
     <div class="meta"><div class="nm">${esc(it.name)}${it.myId ? ' <span class="badge gold">мій</span>' : ''}</div><small>${esc([R.RARITIES[it.rarity] ? R.RARITIES[it.rarity].name : '', itemSub(it), it.cost, it.attune && 'налаштування'].filter(Boolean).join(' · '))}</small></div></div>`).join('');
 }
+// Ефекти в каталозі: свої (редагуються) і стандартні 5e (довідка)
+function catalogEffectsHtml() {
+  const mine = S.myEffects;
+  const row = (act, id, icon, name, sub, std) => `<div class="item" data-act="${act}" data-${std ? 'k' : 'id'}="${esc(id)}"><span class="ic">${esc(icon)}</span>
+    <div class="meta"><div class="nm"${std ? '' : ' data-notr'}>${esc(name)}${std ? '' : ' <span class="badge gold" data-notr>' + esc(t('мій')) + '</span>'}</div>${sub ? `<small${std ? '' : ' data-notr'}>${esc(sub)}</small>` : ''}</div></div>`;
+  return `<h3 class="sec">Мої ефекти</h3>
+    ${mine === null ? '<div class="spinner" style="margin:8px auto;width:20px;height:20px"></div>'
+      : mine.length ? mine.map((x) => row('fxEditMine', x.id, x.data.icon, x.data.name, x.data.desc ? x.data.desc.slice(0, 90) : '', false)).join('')
+        : empty('✨', 'Своїх ефектів ще немає')}
+    <h3 class="sec">Стандартні ефекти D&D 5e</h3>
+    ${R.EFFECT_GROUPS.map(([g, gn]) => `<div class="fld"><span>${gn}</span></div>${Object.entries(R.EFFECTS).filter(([, d]) => d.g === g).map(([k, d]) => row('fxStdInfo', k, d.icon, d.name, '', true)).join('')}`).join('')}`;
+}
 function catalogHtml() {
   const manage = !cur().charId;
   const ch = manage ? null : currentChar();
-  return `<div class="top"><h2>${manage ? '📦 Каталог предметів' : '🎁 Видати предмет'}</h2></div>
+  if (manage && S.cat.kind === 'effects') {
+    return `<div class="top"><h2>📦 Каталог</h2></div>
+    <div class="btns cat-new"><button class="btn" data-act="myNewItem">＋ Створити предмет</button><button class="btn primary" data-act="fxNew">＋ Створити ефект</button></div>
+    <div class="tabs cat-kind"><button data-act="catKind" data-k="items">🎒 Предмети</button><button class="on" data-act="catKind" data-k="effects">✨ Ефекти</button></div>
+    <p class="hint" style="margin:4px">Свої ефекти доступні у всіх твоїх кімнатах: на листі персонажа — «＋ Додати статус».</p>
+    ${catalogEffectsHtml()}`;
+  }
+  return `<div class="top"><h2>${manage ? '📦 Каталог' : '🎁 Видати предмет'}</h2></div>
+  ${manage ? `<div class="btns cat-new"><button class="btn primary" data-act="myNewItem">＋ Створити предмет</button><button class="btn" data-act="fxNew">＋ Створити ефект</button></div>
+    <div class="tabs cat-kind"><button class="on" data-act="catKind" data-k="items">🎒 Предмети</button><button data-act="catKind" data-k="effects">✨ Ефекти</button></div>` : ''}
   <p class="hint" style="margin:4px">${manage ? 'D&D 5e (SRD) і твої власні предмети. Власні доступні у всіх твоїх кімнатах. Натисни на предмет D&D, щоб зберегти його змінену копію.'
     : `Персонаж: <b>${ch ? esc(ch.sheet.name) : ''}</b>`}</p>
   ${S.myItems === null ? '<div class="spinner" style="margin:8px auto;width:20px;height:20px"></div>' : ''}
@@ -1654,7 +1723,7 @@ function catalogHtml() {
   <div class="chips">${CAT_GROUPS.map(([k, t]) => `<button class="chip ${S.cat.group === k ? 'on' : ''}" data-act="catGroup" data-g="${k}">${t}</button>`).join('')}</div>
   <div class="chips"><button class="chip ${S.cat.rarity === 'all' ? 'on' : ''}" data-act="catRarity" data-r="all">Будь-яка рідкість</button>
   ${R.RARITY_IDS.map((k) => `<button class="chip rc-${k} ${S.cat.rarity === k ? 'on' : ''}" data-act="catRarity" data-r="${k}"><span class="rname">${R.RARITIES[k].name}</span></button>`).join('')}</div>
-  <button class="btn block mt" data-act="${manage ? 'myNewItem' : 'customItem'}">＋ ${manage ? 'Новий предмет у каталог' : 'Створити свій предмет'}</button>
+  ${manage ? '' : '<button class="btn block mt" data-act="customItem">＋ Створити свій предмет</button>'}
   <div id="catList">${catalogListHtml()}</div>`;
 }
 
@@ -1728,7 +1797,49 @@ function logHtml() {
 }
 
 // ================= Модальні вікна =================
+// Тривалість ефекту: лічильник і одиниці (для виснаження — рівень 1–6)
+function fxDurEditor(m, lvl) {
+  if (lvl) {
+    return `<div class="row fld fx-dur"><span class="grow">Рівень виснаження</span><div class="stepper"><button data-act="fxN" data-d="-1">−</button><b>${m.n}</b><button data-act="fxN" data-d="1">+</button></div></div>`;
+  }
+  return `<div class="fld"><span>Тривалість</span></div>
+    <div class="chips wrap">${FX_UNIT_NAMES.map(([k, n]) => `<button class="chip ${m.unit === k ? 'on' : ''}" data-act="fxUnit" data-k="${k}">${n}</button>`).join('')}</div>
+    ${m.unit !== 'perm' ? `<div class="row fld fx-dur"><span class="grow">Скільки</span><div class="stepper"><button data-act="fxN" data-d="-1">−</button>
+      <input type="number" inputmode="numeric" class="fx-n-in" data-bind="modal.n" data-num min="1" max="999" value="${m.n}"><button data-act="fxN" data-d="1">+</button></div></div>` : ''}`;
+}
 const MODALS = {
+  // Накласти статус на персонажа: стандартні ефекти 5e або свої з каталогу
+  fxAdd: (m) => {
+    const ch = currentChar();
+    const mine = S.myEffects || [];
+    const pick = (id, icon, name, std) => `<button class="fx-pick ${m.sel === id ? 'on' : ''}" data-act="fxPick" data-id="${id}"><span>${esc(icon)}</span> <span${std ? '' : ' data-notr'}>${esc(name)}</span></button>`;
+    const [kind, id] = String(m.sel || '').split(':');
+    const def = kind === 'k' ? R.EFFECTS[id] : null;
+    const my = kind === 'm' ? (mine.find((x) => String(x.id) === id) || {}).data : null;
+    const has = def && ch && (ch.effects || []).some((e) => e.key === id);
+    return `${hdr('＋ Додати статус', ch ? esc(ch.sheet.name) : '')}
+      ${R.EFFECT_GROUPS.map(([g, gn]) => `<div class="fld"><span>${gn}</span></div><div class="fx-picks">${Object.entries(R.EFFECTS).filter(([, d]) => d.g === g).map(([k, d]) => pick(`k:${k}`, d.icon, d.name, true)).join('')}</div>`).join('')}
+      <div class="fld"><span>Мої ефекти</span></div>
+      ${S.myEffects === null ? '<div class="spinner" style="margin:8px auto;width:20px;height:20px"></div>'
+        : mine.length ? `<div class="fx-picks">${mine.map((x) => pick(`m:${x.id}`, x.data.icon, x.data.name, false)).join('')}</div>`
+          : '<p class="hint">Своїх ефектів ще немає. Створи їх у «📦 Каталог» → «＋ Створити ефект».</p>'}
+      ${def || my ? `<div class="card fx-sel"><b>${esc((def || my).icon)} <span${def ? '' : ' data-notr'}>${esc((def || my).name)}</span></b>
+        ${(def || my).desc ? `<p class="hint"${def ? '' : ' data-notr'}>${esc((def || my).desc)}</p>` : ''}
+        ${has ? '<small class="hint">Вже діє на персонажі — тривалість оновиться.</small>' : ''}</div>
+        ${fxDurEditor(m, def && def.def.unit === 'lvl')}
+        <button class="btn primary block mt2" data-act="fxApply">✨ Накласти</button>` : '<p class="hint mt">Обери ефект зі списку.</p>'}`;
+  },
+  // Свій ефект у каталозі майстра
+  fxEdit: (m) => `${hdr(m.id ? '✏️ Мій ефект' : '＋ Новий ефект', 'Твій каталог — спільний для всіх кімнат')}
+    <label class="fld"><span>Назва</span><input data-bind="modal.form.name" maxlength="60" placeholder="Напр. Прокляття мумії" value="${esc(m.form.name)}"></label>
+    <div class="fld"><span>Значок</span></div>
+    <div class="chips wrap fx-icons">${FX_ICONS.map((i) => `<button class="chip ${m.form.icon === i ? 'on' : ''}" data-act="fxIcon" data-i="${i}">${i}</button>`).join('')}
+      <input class="fx-icon-in" data-bind="modal.form.icon" maxlength="8" value="${esc(m.form.icon)}" aria-label="${esc(t('Свій значок'))}"></div>
+    <label class="fld"><span>Опис</span><textarea data-bind="modal.form.desc" rows="5" maxlength="1500" placeholder="Що робить ефект, як знімається…">${esc(m.form.desc)}</textarea></label>
+    ${fxDurEditor(m, false)}
+    <p class="hint">Тривалість за замовчуванням — під час накладання її можна змінити.</p>
+    <button class="btn primary block mt2" data-act="fxSave">💾 Зберегти в каталог</button>
+    ${m.id ? '<button class="btn danger block mt" data-act="fxDelete">🗑 Видалити з каталогу</button>' : ''}`,
   invite: () => {
     const r = S.room.room;
     const link = inviteLink(r.id);
@@ -2253,8 +2364,8 @@ const ACT = {
     st.purpose = value;
     const a = diceAuto(ch, value);
     if (a) { st.dice = { ...a.dice }; st.mod = a.mod; } else st.mod = 0;
-    // перевага/перешкода — ситуативні, для нової мети скидаються
-    st.mode = '';
+    // перевага/перешкода — ситуативні: для нової мети скидаються, а ефекти (отруєння, лють…) ставлять їх самі
+    st.mode = R.effectRoll(ch.effects, value).mode;
     render();
   },
   dieAdd: ({ s }) => { const st = S.dice; if (!st) return; st.dice[s] = Math.min(20, (st.dice[s] || 0) + 1); tapFx(); render(); },
@@ -2800,6 +2911,79 @@ const ACT = {
     await reloadAfter(() => api('endEvent', { roomId: roomId(), eventId: ev.id }), '📊 Звіт події надіслано в чат');
   },
   eventRolls: ({ id }) => { S.evRolls = S.evRolls || {}; S.evRolls[id] = !S.evRolls[id]; render(); },
+  // ---- ефекти ----
+  fxAddModal: () => {
+    const ch = currentChar();
+    if (!ch) return;
+    openModal({ type: 'fxAdd', charId: ch.id, sel: '', n: 10, unit: 'round' });
+    loadMyEffects();
+  },
+  fxPick: ({ id }) => {
+    const m = S.modal;
+    m.sel = id;
+    const [kind, k] = id.split(':');
+    const d = kind === 'k' ? R.EFFECTS[k].def : ((S.myEffects || []).find((x) => String(x.id) === k) || { data: {} }).data.def;
+    if (d) { m.unit = d.unit; m.n = d.unit === 'perm' ? 10 : d.n; }
+    renderModal();
+  },
+  fxUnit: ({ k }) => { S.modal.unit = k; if (k !== 'perm' && !(S.modal.n > 0)) S.modal.n = 1; renderModal(); },
+  fxN: ({ d }) => {
+    const m = S.modal;
+    const max = m.unit === 'lvl' ? 6 : 999;
+    m.n = Math.max(1, Math.min(max, (Number(m.n) || 0) + Number(d)));
+    renderModal();
+  },
+  fxApply: async () => {
+    const m = S.modal;
+    const [kind, id] = String(m.sel).split(':');
+    if (!id) return;
+    const p = { charId: m.charId, n: Number(m.n) || 1, unit: m.unit };
+    if (kind === 'k') p.key = id; else p.myId = Number(id);
+    const r = await reloadAfter(() => api('addEffect', p), '✨ Статус накладено');
+    if (r) closeModal();
+  },
+  fxStep: ({ id, d }) => reloadAfter(() => api('stepEffect', { effectId: Number(id), delta: Number(d) })).then((r) => { if (r && r.removed) toast('Статус закінчився і знятий'); }),
+  fxRemove: async ({ id }) => {
+    hideTip();
+    const r = await reloadAfter(() => api('removeEffect', { effectId: Number(id) }));
+    if (r) toast('Статус знято');
+  },
+  fxInfo: ({ id }, el) => {
+    const ch = currentChar();
+    const e = ch && (ch.effects || []).find((x) => x.id === Number(id));
+    if (!e) return;
+    const d = fxView(e);
+    const M = S.room && S.room.role === 'master' && !isRO();
+    showTip(el, `${d.icon} ${d.std ? t(d.name) : d.name}`, `<div class="hint" data-notr>⏳ ${esc(fxLeft(e))}</div>
+      ${d.desc ? `<p style="margin:6px 0 0"${d.std ? '' : ' data-notr'}>${esc(d.desc)}</p>` : ''}
+      ${M ? `<button class="btn sm danger mt" data-act="fxRemove" data-id="${e.id}">Зняти статус</button>` : ''}`);
+  },
+  // каталог: свої ефекти
+  catKind: ({ k }) => { S.cat.kind = k === 'effects' ? 'effects' : 'items'; render(); if (S.cat.kind === 'effects') loadMyEffects(); },
+  fxNew: () => openModal({ type: 'fxEdit', id: 0, form: { name: '', icon: '✨', desc: '' }, n: 10, unit: 'round' }),
+  fxEditMine: ({ id }) => {
+    const x = (S.myEffects || []).find((y) => y.id === Number(id));
+    if (!x) return;
+    const d = x.data.def || { n: 10, unit: 'round' };
+    openModal({ type: 'fxEdit', id: x.id, form: { name: x.data.name, icon: x.data.icon, desc: x.data.desc || '' }, n: d.unit === 'perm' ? 10 : d.n, unit: d.unit });
+  },
+  fxIcon: ({ i }) => { S.modal.form.icon = i; renderModal(); },
+  fxSave: async () => {
+    const m = S.modal;
+    if (!m.form.name.trim()) { toast('Вкажи назву ефекту', true); return; }
+    const ok = await run(() => api('saveMyEffect', { id: m.id || undefined, effect: { ...m.form, def: { n: Number(m.n) || 1, unit: m.unit } } }), '📦 Збережено в каталог');
+    if (ok) { closeModal(); await loadMyEffects(); }
+  },
+  fxDelete: async () => {
+    const m = S.modal;
+    if (!(await confirmBox(`Видалити ефект «${m.form.name}» з каталогу? Уже накладені на персонажів залишаться.`))) return;
+    const ok = await run(() => api('deleteMyEffect', { id: m.id }), 'Видалено з каталогу');
+    if (ok) { closeModal(); await loadMyEffects(); }
+  },
+  fxStdInfo: ({ k }, el) => {
+    const d = R.EFFECTS[k];
+    if (d) showTip(el, `${d.icon} ${t(d.name)}`, `<p style="margin:0">${esc(d.desc)}</p>`);
+  },
   rollMark: ({ id, m }) => reloadAfter(() => api('markRoll', { roomId: roomId(), rollId: Number(id), mark: Number(m) })),
   rollDel: async ({ id }) => {
     const r = ((S.room && S.room.room.rolls) || []).find((x) => x.id === Number(id))
@@ -2955,6 +3139,16 @@ const ACT = {
   },
 };
 
+async function loadMyEffects() {
+  try {
+    S.myEffects = (await api('myEffects')).effects;
+  } catch (e) {
+    if (S.myEffects === null) S.myEffects = [];
+    toast(e.message, true);
+  }
+  if (S.modal && S.modal.type === 'fxAdd') renderModal();
+  else if (cur().view === 'catalog') render();
+}
 async function loadMyItems() {
   try {
     const r = await api('myItems');
