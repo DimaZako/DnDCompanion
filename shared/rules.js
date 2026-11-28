@@ -1,7 +1,8 @@
 // Правила D&D 5e (SRD 5.1, CC-BY-4.0), спільні для Mini App і сервера.
 import { CLASS_DATA, FEATS, RACE_TRAITS, RACE_CHOICES, PACT_BOONS, resourceDefs } from './classdata.js';
 import { SPELLS, SPELL_IDS as SPELL_ORDER, DOMAIN_SPELLS, OATH_SPELLS, LAND_SPELLS, PATRON_SPELLS } from './spells.js';
-import { buildProf, grantProf, weaponProficient, SUBCLASS_PROF, FEAT_PROF } from './gear.js';
+import { buildProf, grantProf, weaponProficient, SUBCLASS_PROF, FEAT_PROF, RACE_PROF, LANGUAGES } from './gear.js';
+import { RACE_DATA, RACE_GROUPS } from './races.js';
 export * from './gear.js';
 export { SPELLS, SPELL_IDS, spellDuration, SPELL_LIST_NAMES } from './spells.js';
 export { CLASS_DATA, FEATS };
@@ -86,6 +87,62 @@ export const RACES = {
   half_orc: { name: 'Напіворк', speed: 30, bonus: { str: 2, con: 1 }, skills: ['intimidation'] },
   tiefling: { name: 'Тифлінг', speed: 30, bonus: { cha: 2, int: 1 } },
 };
+for (const r of Object.values(RACES)) r.group = 'phb';
+export { RACE_GROUPS, RACE_DATA, RACE_TRAITS };
+// Додаткові раси з shared/races.js: базові поля для вибору й створення
+for (const [id, d] of Object.entries(RACE_DATA)) {
+  RACES[id] = { name: d.n, speed: d.speed || 30, bonus: d.asi && d.asi !== 'flex' ? d.asi : {}, flex: d.asi === 'flex', choose: d.choose, skills: d.skills,
+    skillChoice: d.skillChoice, hpPerLevel: d.hpLvl, group: d.g, src: d.src };
+}
+export const raceData = (sheet) => RACE_DATA[sheet && sheet.raceId] || null;
+const SIZE_N = { S: 'Малий', M: 'Середній' };
+const speedVal = (v, walk) => (v === true ? walk : Number(v) || 0);
+// риси, що випливають із полів раси: розмір, тип, швидкості, темний зір, мови
+function autoRaceTraits(d) {
+  const out = [];
+  if (d.size === 'S') out.push(['Розмір', 'Малий.']);
+  if (d.size === 'SM') out.push(['Розмір', 'Малий або Середній — на вибір.']);
+  if (d.type && d.type !== 'Гуманоїд') out.push(['Тип істоти', `${d.type}.`]);
+  const walk = d.speed || 30;
+  const extra = [['fly', 'політ'], ['swim', 'плавання'], ['climb', 'лазіння'], ['burrow', 'риття']].filter(([k]) => d[k]).map(([k, n]) => `${n} ${speedVal(d[k], walk)} фт`);
+  if (walk !== 30 || extra.length) out.push(['Швидкість', `${walk} фт${extra.length ? `; ${extra.join('; ')}` : ''}.`]);
+  if (d.dark) out.push(['Темний зір', `Бачиш у темряві на ${d.dark} фт як у тьмяному світлі.`]);
+  if (d.langs) out.push(['Мови', `${d.langs.map((l) => LANGUAGES[l] || l).join(', ')}${d.lang ? ` + ${d.lang} на вибір` : ''}`]);
+  return out;
+}
+for (const [id, d] of Object.entries(RACE_DATA)) {
+  const own = new Set(d.tr.map(([n]) => n));
+  RACE_TRAITS[id] = [...autoRaceTraits(d).filter(([n]) => !own.has(n)), ...d.tr];
+  RACE_PROF[id] = { armor: d.armor, weapons: d.weapons, tools: d.tools, tool: d.tool, languages: d.langs, lang: d.lang };
+  const specs = [];
+  (d.pick || []).forEach((p, i) => specs.push({ id: `raceSkill${i || ''}`, name: 'Навички раси', kind: 'skill', from: p.from === 'any' ? undefined : p.from, total: { 1: p.n }, src: 'race' }));
+  if (d.size === 'SM') specs.push({ id: 'raceSize', name: 'Розмір', total: { 1: 1 }, options: [{ id: 'S', name: 'Малий' }, { id: 'M', name: 'Середній' }], src: 'race' });
+  for (const c of d.choices || []) {
+    if (c.ref === 'dragon') { specs.push({ ...RACE_CHOICES.dragonborn[0] }); continue; }
+    const options = c.addSkills ? [...c.options, ...SKILL_IDS.map((k) => ({ id: `sk_${k}`, name: `Навичка: ${SKILLS[k][0]}`, skills: [k] }))] : c.options;
+    specs.push({ total: { 1: 1 }, ...c, options, src: 'race' });
+  }
+  if (d.feat) specs.push({ id: 'raceFeat', name: 'Риса', kind: 'feat', total: { 1: 1 }, src: 'race' });
+  if (specs.length) RACE_CHOICES[id] = specs;
+}
+// швидкості раси (політ, плавання, лазіння, риття) з урахуванням виборів
+export function raceSpeeds(sheet) {
+  const d = raceData(sheet);
+  const out = {};
+  if (!d) return out;
+  const walk = Number(sheet.speed) || d.speed || 30;
+  for (const k of ['fly', 'swim', 'climb', 'burrow']) if (d[k]) out[k] = speedVal(d[k], walk);
+  const ch = sheet.choices || {};
+  if ((ch.simicBase || []).includes('climber')) out.climb = walk;
+  if ((ch.simicBase || []).includes('underwater')) out.swim = walk;
+  return out;
+}
+// природна зброя раси — як предмети з від’ємними id
+export function naturalWeapons(sheet) {
+  const d = raceData(sheet);
+  return ((d && d.nat) || []).map((w, i) => ({ id: -(i + 1), qty: 1, d: { name: w.n, type: 'weapon', damage: w.d, dmgType: w.t, natural: true, ability: w.ab || '' } }));
+}
+export const initMod = (sheet) => mod(sheet.abilities.dex) + (Number(sheet.initBonus) || 0) + ((raceData(sheet) || {}).initProf ? sheetProf(sheet) : 0);
 
 export const BACKGROUNDS = {
   acolyte: { name: 'Прислужник', skills: ['insight', 'religion'] },
@@ -174,7 +231,7 @@ export function spellSlots(classId, level, subclassId) {
   return [];
 }
 export const isCaster = (sheet) => casterInfo(sheet.classId, sheet.subclassId).type !== 'none';
-export const canCastAnySpell = (sheet) => isCaster(sheet) || ['high_elf', 'tiefling'].includes(sheet.raceId);
+export const canCastAnySpell = (sheet) => isCaster(sheet) || ['high_elf', 'tiefling'].includes(sheet.raceId) || !!((RACE_DATA[sheet.raceId] || {}).spells || (RACE_DATA[sheet.raceId] || {}).cantrips);
 
 export const hdAverage = (hd) => hd / 2 + 1;
 
@@ -394,7 +451,13 @@ export function computeAC(sheet, items) {
     if (c && c.unarmored === 'wis' && !shield) base += mod(sheet.abilities.wis);
     const sc = subclassSpec(sheet.classId, sheet.subclassId);
     if (sc && sc.unarmoredBase) base = Math.max(base, sc.unarmoredBase + dex);
+    // природна броня раси
+    const rd = raceData(sheet);
+    if (rd && rd.ac) base = Math.max(base, rd.ac.flat != null ? rd.ac.flat : rd.ac.base + mod(sheet.abilities[rd.ac.ab]));
   }
+  const rdx = raceData(sheet);
+  if (rdx && rdx.acBonus) bonus += rdx.acBonus;
+  if (((sheet.choices || {}).simic5 || []).includes('carapace') && !(items || []).some((it) => it.equipped && it.data && it.data.type === 'armor' && /heavy|важк/i.test(String(it.data.cat || it.data.group || '')))) bonus += 1;
   if (armored && hasStyle(sheet, 'defense')) bonus += 1;
   return base + shield + bonus;
 }
@@ -406,6 +469,7 @@ export function weaponAttack(sheet, d) {
   let abMod = str;
   if (d.ranged) abMod = dex;
   if (props.includes('фехтув') || (sheet.classId === 'monk' && weaponTags(d).monk)) abMod = Math.max(str, dex);
+  if (d.ability && sheet.abilities[d.ability] != null) abMod = mod(sheet.abilities[d.ability]);
   const magic = Number(d.bonus || 0);
   const noProf = weaponProficient(sheet, d) === false;
   const hit = abMod + (noProf ? 0 : sheetProf(sheet)) + magic + (d.ranged && hasStyle(sheet, 'archery') ? 2 : 0);
@@ -465,6 +529,15 @@ export function buildCharacter(input, opts = {}) {
     const uniq = [...new Set(ch)].filter((a) => ABILITIES.includes(a) && !race.choose.exclude.includes(a));
     if (uniq.length !== race.choose.count) errors.push(`Оберіть ${race.choose.count} різні характеристики для расового бонусу`);
     for (const a of uniq) abil[a] += race.choose.amount;
+  }
+  if (race.flex) {
+    // MPMM: +2 до однієї й +1 до іншої або +1 до трьох різних
+    const ch = [...new Set(Array.isArray(input.raceChoice) ? input.raceChoice : [])].filter((a) => ABILITIES.includes(a));
+    if (input.raceMode === '111') {
+      if (ch.length !== 3) errors.push('Оберіть три різні характеристики для бонусу +1');
+      else for (const a of ch) abil[a] += 1;
+    } else if (ch.length !== 2) errors.push('Оберіть характеристики для бонусів раси +2 і +1');
+    else { abil[ch[0]] += 2; abil[ch[1]] += 1; }
   }
   s.abilities = abil;
   s.saves = cls.saves.slice();
@@ -611,7 +684,13 @@ export function pendingChoices(sheet, level) {
 }
 export function choiceOptions(spec, sheet, level) {
   const ch = sheet.choices || {};
-  if (spec.kind === 'skill') return SKILL_IDS.map((k) => ({ id: k, name: SKILLS[k][0], desc: '', disabled: !!sheet.skills[k], reason: sheet.skills[k] ? 'вже є' : '' }));
+  if (spec.kind === 'skill') return (spec.from || SKILL_IDS).map((k) => ({ id: k, name: SKILLS[k][0], desc: '', disabled: !!sheet.skills[k], reason: sheet.skills[k] ? 'вже є' : '' }));
+  if (spec.kind === 'feat') {
+    // риса на 1 рівні (людина-варіант, своє походження); пів-риси з вибором характеристики — окремими варіантами
+    return featOptions(sheet).filter((ft) => ft.id !== 'skilled').flatMap((ft) => (ft.asi && ft.asi.length > 1
+      ? ft.asi.map((a) => ({ id: `${ft.id}:${a}`, name: `${ft.name} (${ABILITY_SHORT[a]} +1)`, desc: ft.desc, disabled: ft.disabled || sheet.abilities[a] >= 20, reason: ft.reason || (sheet.abilities[a] >= 20 ? 'характеристика вже 20' : '') }))
+      : [{ id: ft.id, name: ft.name, desc: ft.desc, disabled: ft.disabled, reason: ft.reason }]));
+  }
   if (spec.kind === 'expert') return spec.from.map((k) => ({ id: k, name: SKILLS[k][0], desc: 'Володіння з подвоєним бонусом майстерності.', disabled: sheet.skills[k] === 2, reason: sheet.skills[k] === 2 ? 'вже є' : '' }));
   const taken = new Set([...(ch[spec.id] || []), ...(spec.exclude ? ch[spec.exclude] || [] : [])]);
   return spec.options.map((op) => {
@@ -675,6 +754,12 @@ export function applyChoicesAt(sheet, level, picks = {}, earliest = false) {
     sheet.choices[spec.id] = [...(sheet.choices[spec.id] || []), ...sel];
     sel.forEach((id, i) => {
       const op = opts.find((x) => x.id === id);
+      if (spec.kind === 'feat') {
+        const [fid, ab] = id.split(':');
+        errors.push(...applyFeat(sheet, { id: fid, ability: ab }, earliest ? pickLevel(spec, before + i) : level));
+        return;
+      }
+      if (op.speed) sheet.speed = (Number(sheet.speed) || 30) + op.speed;
       if (spec.kind === 'skill') sheet.skills[id] = Math.max(1, sheet.skills[id] || 0);
       if (spec.kind === 'expert') sheet.skills[id] = 2;
       for (const k of op.skills || []) sheet.skills[k] = Math.max(1, sheet.skills[k] || 0);
@@ -753,7 +838,19 @@ export function applyFeat(sheet, input, level, hpLevels = level) {
 export function sheetResources(sheet) {
   const mods = Object.fromEntries(ABILITIES.map((a) => [a, mod(sheet.abilities[a])]));
   const used = sheet.resUsed || {};
-  return resourceDefs(sheet.classId, sheet.subclassId, sheet.raceId, sheet.level, mods).map((r) => ({ ...r, used: Math.min(r.max, Number(used[r.id] || 0)) }));
+  return [...resourceDefs(sheet.classId, sheet.subclassId, sheet.raceId, sheet.level, mods), ...raceResources(sheet, mods)].map((r) => ({ ...r, used: Math.min(r.max, Number(used[r.id] || 0)) }));
+}
+// ресурси раси (використання за відпочинок); max: число, 'prof' — бонус майстерності, ключ характеристики — її модифікатор (мін. 1)
+export function raceResDefs(sheet) {
+  const d = raceData(sheet);
+  if (!d) return [];
+  const out = (d.res || []).filter((r) => !r.lvl || (Number(sheet.level) || 1) >= r.lvl);
+  if (d.breath) out.unshift({ id: 'breath', n: 'Подих', max: 1, rest: 'short', cost: ['action'], note: 'Подих за родоводом' });
+  return out;
+}
+function raceResources(sheet, mods) {
+  return raceResDefs(sheet).map((r) => ({ id: r.id, name: r.n, recharge: r.rest, pool: false,
+    max: r.max === 'prof' ? sheetProf(sheet) : typeof r.max === 'string' ? Math.max(1, mods[r.max] || 0) : r.max }));
 }
 // kind: 'short' | 'long'; nowSec — поточний час у секундах
 export function applyRest(sheet, kind, nowSec) {
@@ -842,6 +939,8 @@ export function spellPlan(sheet) {
   const ct = atLv(CANTRIPS_KNOWN[key], L);
   if (ct) pools.push({ id: 'cantrips', name: 'Замовляння', count: ct, lists: [list], min: 0, max: 0 });
   if (sheet.raceId === 'high_elf') pools.push({ id: 'raceCantrip', name: 'Замовляння високого ельфа', count: 1, lists: ['wizard'], min: 0, max: 0 });
+  const rdp = RACE_DATA[sheet.raceId];
+  if (rdp && rdp.cantrips && (!rdp.cantrips.when || (ch[rdp.cantrips.when[0]] || []).includes(rdp.cantrips.when[1]))) pools.push({ id: 'raceCantrip', name: rdp.cantrips.name, count: rdp.cantrips.count, lists: rdp.cantrips.lists, min: 0, max: 0 });
   if (sheet.classId === 'cleric' && sub === 'nature') pools.push({ id: 'bonusCantrip', name: 'Замовляння друїда (домен природи)', count: 1, lists: ['druid'], min: 0, max: 0 });
   if (sheet.classId === 'druid' && sub === 'land' && L >= 2) pools.push({ id: 'bonusCantrip', name: 'Додаткове замовляння (коло землі)', count: 1, lists: ['druid'], min: 0, max: 0 });
   if (sheet.classId === 'warlock' && (ch.pactBoon || []).includes('tome')) pools.push({ id: 'tome', name: 'Книга тіней (замовляння будь-яких класів)', count: 3, lists: ANY_LIST, min: 0, max: 0 });
@@ -880,6 +979,11 @@ export function spellPlan(sheet) {
   }
   if (key === 'arcane_trickster' && L >= 3) addAlways(['mage_hand'], 'Підклас');
   if (sheet.raceId === 'tiefling') addAlways(['thaumaturgy', ...(L >= 3 ? ['hellish_rebuke'] : []), ...(L >= 5 ? ['darkness'] : [])], 'Раса');
+  if (rdp) {
+    const ids = (rdp.spells || []).filter(([lv]) => L >= lv).map(([, id]) => id).filter((id) => SPELLS[id]);
+    if (rdp.choiceSpells) ids.push(...(ch[rdp.choiceSpells] || []).filter((id) => SPELLS[id]));
+    if (ids.length) addAlways(ids, 'Раса');
+  }
   const sp = sheet.spell || {};
   return {
     key, ability: ab, maxLevel, pools, prep, always,
@@ -995,7 +1099,7 @@ export const turnState = (t) => ({ ...TURN_BLANK, ...(t || {}) });
 // Властивості зброї для правил бою
 const POLEARMS = ['glaive', 'halberd', 'quarterstaff', 'spear'];
 export function weaponTags(d) {
-  if (!d) return { melee: true, unarmed: true, monk: true };
+  if (!d || d.natural) return { melee: true, unarmed: true, monk: true, oneHanded: true };
   const p = String(d.props || '').toLowerCase();
   const id = d.catalogId || d.kind || '';
   const twoHanded = p.includes('дворуч');
@@ -1076,6 +1180,7 @@ export const ATTACK_MODES = {
   frenzy: { name: 'Шаленство', cost: 'bonus', note: 'Берсерк у люті' },
   warpriest: { name: 'Атака жерця війни', cost: 'bonus', note: 'Жрець війни', extra: { warPriest: 1 } },
   battlemagic: { name: 'Атака після закляття', cost: 'bonus', note: 'Бойова магія' },
+  racial: { name: 'Расова атака', cost: 'bonus', note: 'Раса' },
   reaction: { name: 'Атака реакцією', cost: 'reaction', note: 'Атака при нагоді' },
 };
 // які предмети годяться для режиму (id 0 — беззбройний удар)
@@ -1090,6 +1195,7 @@ export function modeWeapons(mode, sheet, weapons, t) {
     case 'crossbow': return weapons.filter((w) => tg(w).handCrossbow);
     case 'gwm': return weapons.filter((w) => tg(w).melee);
     case 'frenzy': case 'reaction': return W.filter((w) => tg(w).melee);
+    case 'racial': { const b = (raceData(sheet) || {}).batk; return b ? weapons.filter((w) => w.id === b.w) : []; }
     default: return W;
   }
 }
@@ -1111,6 +1217,7 @@ function hasMode(mode, sheet, ctx, t, lim) {
     case 'frenzy': return isSub(sheet, 'barbarian', 'berserker', 3);
     case 'warpriest': return isSub(sheet, 'cleric', 'war');
     case 'battlemagic': return isSub(sheet, 'bard', 'valor', 14) || isSub(sheet, 'fighter', 'eldritch_knight', 7);
+    case 'racial': return !!(raceData(sheet) || {}).batk;
     default: return false;
   }
 }
@@ -1126,6 +1233,11 @@ function modeCond(mode, sheet, ctx, t, lim) {
     case 'gwm': return !t.gwm ? 'Після крита чи вбивства зброєю ближнього бою в цьому ході' : '';
     case 'frenzy': return !lim.rage ? 'Лише в люті' : '';
     case 'warpriest': return !t.atk ? 'Спершу атакуй дією «Атака»' : (res.warPriest || 0) < 1 ? 'Використання скінчились' : '';
+    case 'racial': {
+      const b = (raceData(sheet) || {}).batk;
+      if (!b) return '';
+      return b.need === 'dash' && !t.dashed ? 'Спершу Ривок' : b.res && (res[b.res] || 0) < 1 ? 'Використання скінчились' : '';
+    }
     case 'battlemagic': {
       const bard = isSub(sheet, 'bard', 'valor', 14);
       const okSp = (t.spells || []).some((x) => x.cost === 'action' && (bard || x.lvl === 0 || sheet.level >= 18));
@@ -1133,6 +1245,13 @@ function modeCond(mode, sheet, ctx, t, lim) {
     }
     default: return '';
   }
+}
+// назва, примітка й ціна режиму (расова атака — з даних раси)
+export function modeInfo(mode, sheet) {
+  const M = ATTACK_MODES[mode];
+  if (mode !== 'racial') return M;
+  const b = (raceData(sheet) || {}).batk;
+  return b ? { ...M, name: b.n, note: (raceData(sheet) || {}).n || M.note, extra: b.res ? { [b.res]: 1 } : null } : M;
 }
 // чи доступний режим атаки зараз: { ok, why, has }
 export function attackMode(mode, sheet, ctx) {
@@ -1153,7 +1272,7 @@ export function attackModeList(sheet, ctx) {
   const myTurn = ctx.myTurn !== false;
   return Object.keys(ATTACK_MODES)
     .filter((mode) => (myTurn ? mode !== 'reaction' : mode === 'reaction'))
-    .map((mode) => ({ mode, ...ATTACK_MODES[mode], ...attackMode(mode, sheet, ctx) }))
+    .map((mode) => ({ mode, ...modeInfo(mode, sheet), ...attackMode(mode, sheet, ctx) }))
     .filter((m) => m.has);
 }
 
@@ -1169,7 +1288,7 @@ export function turnOptions(sheet, req, ctx) {
   let anytime = false;
   const k = req.kind;
   if (k === 'attack') {
-    const M = ATTACK_MODES[req.mode || 'main'];
+    const M = ATTACK_MODES[req.mode || 'main'] && modeInfo(req.mode || 'main', sheet);
     if (!M) return { opts: [], why: 'Невідомий режим атаки' };
     const r = attackMode(req.mode || 'main', sheet, ctx);
     const cond = r.has ? modeCond(req.mode || 'main', sheet, ctx, t, lim) : r.why;
@@ -1214,6 +1333,13 @@ export function turnOptions(sheet, req, ctx) {
         else if (isCls(sheet, 'ranger', 14)) opts.push(opt('bonus', 'Зникнення'));
       }
       if (a === 'object' && isSub(sheet, 'rogue', 'thief', 3)) opts.push(opt('bonus', 'Швидкі руки'));
+      // раса: «Спритна втеча» гобліна, «Прилив адреналіну» орка, «Дар фей» хобгобліна…
+      const rs = ((raceData(sheet) || {}).std || {})[a];
+      if (rs) {
+        const ro = opt('bonus', rs.note, rs.res ? { [rs.res]: 1 } : null);
+        const i = opts.findIndex((o) => o.cost === 'bonus');
+        if (i < 0) opts.push(ro); else if (opts[i].extra && !ro.extra) opts[i] = ro;
+      }
       if (['dash', 'disengage', 'hide', 'object'].includes(a)) opts.push(opt('haste', 'Прискорення'));
     }
   } else if (k === 'check') {
@@ -1223,6 +1349,7 @@ export function turnOptions(sheet, req, ctx) {
       // захоплення чи штовхання — замість однієї атаки з дії «Атака»
       opts = [opt('action', 'Захоплення / штовхання замість атаки', null, { attack: true })];
       if (hasFeat(sheet, 'shield_master') && t.atk) opts.push(opt('bonus', 'Майстер щита: поштовх'));
+      else if ((raceData(sheet) || {}).hammer && t.atk) opts.push(opt('bonus', 'Молотові роги: поштовх'));
     } else if (key === 'skill:stealth') {
       opts = [opt('action', 'Сховатися')];
       if (cunning) opts.push(opt('bonus', 'Хитра дія'));
@@ -1263,7 +1390,17 @@ export function turnOptions(sheet, req, ctx) {
       case 'sorcery': opts = [opt('bonus', 'Комірка ↔ очки'), opt('free', 'Метамагія')]; break;
       case 'arcaneRecovery': why = 'Лише під час короткого відпочинку'; break;
       case 'warPriest': why = 'Використовується через «⚔️ Атака» → «Атака жерця війни»'; break;
-      default: opts = [opt('action')];
+      default: {
+        // ресурси раси: ціна з даних раси
+        const rr = raceResDefs(sheet).find((r) => r.id === id);
+        if (rr) {
+          if ((raceData(sheet) || {}).batk && raceData(sheet).batk.res === id) { why = `Використовується через «⚔️ Атака» → «${raceData(sheet).batk.n}»`; break; }
+          const std = Object.values((raceData(sheet) || {}).std || {}).find((x) => x.res === id);
+          if (std) { why = `Використовується через «🏃 Інші дії» (${std.note})`; break; }
+          opts = rr.cost.map((c) => opt(c, rr.note || ''));
+          anytime = !!rr.any || rr.cost.includes('reaction');
+        } else opts = [opt('action')];
+      }
     }
   } else if (k === 'rfeat') {
     // уміння й риси, що спрацьовують реакцією; підготовлена дія
@@ -1297,7 +1434,7 @@ export function reactionFeatures(sheet) {
   const out = [];
   const seen = new Set();
   for (const f of sheet.features || []) {
-    if (!/реакцією/i.test(f.desc || '') || /^Канал/.test(f.name || '') || seen.has(f.name)) continue;
+    if (!/реакцією/i.test(f.desc || '') || /^Канал/.test(f.name || '') || seen.has(f.name) || raceResDefs(sheet).some((r) => r.n === f.name)) continue;
     seen.add(f.name);
     out.push({ id: `f:${f.name}`, name: f.name, desc: f.desc });
   }

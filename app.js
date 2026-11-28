@@ -349,7 +349,7 @@ function derived(ch) {
   return {
     prof: R.sheetProf(s),
     ac: R.computeAC(s, ch.items || []),
-    init: R.mod(s.abilities.dex) + num(s.initBonus),
+    init: R.initMod(s),
     pp: R.passivePerception(s),
     slots: R.sheetSlots(s),
   };
@@ -1134,7 +1134,7 @@ function charHtml(ch, M) {
     <div class="stat"><small>${ab('КЗ')}</small><b>${dv.ac}</b></div>
     <div class="stat ${RO ? '' : 'tapable'}" ${RO ? '' : 'data-act="hpModal"'}><small>Хіти</small><b>${s.hp.cur}/${s.hp.max}</b>${s.hp.temp ? `<span class="tmp">+${s.hp.temp} ${ab('тимч.')}</span>` : ''}</div>
     <div class="stat"><small>${ab('Ініціат.')}</small><b>${fm(dv.init)}</b></div>
-    <div class="stat"><small>${ab('Швидк.')}</small><b>${s.speed}</b></div>
+    <div class="stat"><small>${ab('Швидк.')}</small><b>${s.speed}</b>${speedExtra(s)}</div>
     <div class="stat"><small>${ab('Майст.')}</small><b>${fm(dv.prof)}</b></div></div>
   <div class="hpbar"><i class="${hpClass(s)}" style="width:${Math.max(0, Math.min(100, (s.hp.cur / s.hp.max) * 100))}%"></i></div>
   ${effectsBlock(ch, M, RO)}`;
@@ -1190,7 +1190,9 @@ function diceState(ch) {
 }
 const charWeapons = (ch) => (ch.items || []).map((it) => ({ it, d: withBase(it.data) }))
   .filter(({ d }) => d.type === 'weapon' || (['staff', 'rod'].includes(d.type) && d.damage))
-  .sort((a, b) => Number(b.it.equipped) - Number(a.it.equipped));
+  .sort((a, b) => Number(b.it.equipped) - Number(a.it.equipped))
+  // природна зброя раси (пазурі, роги, укус) — з від’ємними id
+  .concat(R.naturalWeapons(ch.sheet).map((w) => ({ it: { id: w.id, data: w.d, qty: 1, equipped: 1, natural: true }, d: w.d })));
 // Кубики й модифікатор, що відповідають меті кидка (null — довільний кидок)
 function diceAuto(ch, purpose) {
   const s = ch.sheet;
@@ -1678,7 +1680,7 @@ function wizInput(over = {}) {
   const w = S.wiz;
   return {
     name: w.name, raceId: w.raceId, classId: w.classId, backgroundId: w.backgroundId, alignment: w.alignment,
-    base: wizBase() || {}, raceChoice: w.raceChoice, skills: w.skills, raceSkills: w.raceSkills, bgSkills: w.bgSkills, expertise: w.expertise, text: w.text,
+    base: wizBase() || {}, raceChoice: w.raceChoice.filter(Boolean), raceMode: w.raceMode || '21', skills: w.skills, raceSkills: w.raceSkills, bgSkills: w.bgSkills, expertise: w.expertise, text: w.text,
     subclassId: w.subclassId, choices: w.choices,
     level: wizLevel(), asi: w.asi, expertiseAt: w.expertiseAt, choicesUp: w.choicesUp,
     profPicks: w.profPicks, spells: w.sp.list, equip: w.equip, ...over,
@@ -1701,6 +1703,7 @@ function wizStepError(name = wizStepName()) {
     if (w.method === 'pointbuy' && pbSpent() > R.POINT_BUY_TOTAL) return 'Перевищено бюджет очок';
     const race = R.RACES[w.raceId];
     if (race.choose && w.raceChoice.length !== race.choose.count) return `Обери ${race.choose.count} характеристики для бонусу раси`;
+    if (race.flex && (w.raceMode === '111' ? new Set(w.raceChoice).size !== 3 : !(w.raceChoice[0] && w.raceChoice[1] && w.raceChoice[0] !== w.raceChoice[1]))) return 'Обери характеристики для бонусів раси';
   }
   if (name === 'skills') {
     const { errors } = R.buildCharacter(wizInput({ level: 1 }), { partial: true });
@@ -1782,15 +1785,43 @@ function wizChanged(path) {
     w.sp = { list: [], pool: '', q: '', lvl: 'all' };
     dropPicks('class:'); dropPicks('sub:');
   }
-  if (path === 'wiz.raceId') { Object.assign(w, { raceChoice: [], raceSkills: [], choices: {}, choicesUp: {} }); dropPicks('race:'); w.sp.list = w.sp.list.filter((e) => e.pool !== 'raceCantrip'); }
+  if (path === 'wiz.raceId') { Object.assign(w, { raceChoice: [], raceMode: '21', raceSkills: [], choices: {}, choicesUp: {} }); dropPicks('race:'); w.sp.list = w.sp.list.filter((e) => e.pool !== 'raceCantrip'); }
   if (path === 'wiz.backgroundId') { w.bgSkills = []; dropPicks('bg:'); }
   if (path === 'wiz.subclassId') dropPicks('sub:');
   if (path === 'wiz.level') { w.choicesUp = {}; w.expertiseAt = {}; }
   const fm2 = path.match(/^wiz\.asi\.(\d+)\.feat\.id$/);
   if (fm2) Object.assign(w.asi[fm2[1]].feat, { ability: '', skills: [] });
 }
+// політ / плавання / лазіння / риття раси — дрібно під швидкістю
+const SPEED_ICON = { fly: '🕊', swim: '🌊', climb: '🧗', burrow: '⛏' };
+function speedExtra(s) {
+  const sp = R.raceSpeeds(s);
+  const ks = Object.keys(SPEED_ICON).filter((k) => sp[k]);
+  return ks.length ? `<span class="tmp spd">${ks.map((k) => `${SPEED_ICON[k]}${sp[k]}`).join(' ')}</span>` : '';
+}
+// список рас за групами (книги)
+function raceOpts(val, placeholder, extra = '') {
+  const groups = {};
+  for (const [k, v] of Object.entries(R.RACES)) (groups[v.group || 'phb'] = groups[v.group || 'phb'] || []).push([k, v]);
+  return `<option value="">${placeholder}</option>${Object.entries(R.RACE_GROUPS).filter(([g]) => groups[g]).map(([g, label]) => `<optgroup label="${esc(t(label))}">${groups[g]
+    .sort((a, b) => t(a[1].name).localeCompare(t(b[1].name), LOCALES[LANG])).map(([k, v]) => `<option value="${k}" ${k === val ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</optgroup>`).join('')}${extra}`;
+}
+// бонуси раси до характеристики з урахуванням виборів майстра створення
+function raceBonusOf(race, w, a) {
+  let b = (race.bonus[a] || 0) + (race.choose && w.raceChoice.includes(a) ? race.choose.amount : 0);
+  if (race.flex) {
+    const i = w.raceChoice.indexOf(a);
+    if (i >= 0) b += w.raceMode === '111' ? 1 : i === 0 ? 2 : 1;
+  }
+  return b;
+}
 function opts(map, val, placeholder) {
   return `<option value="">${placeholder}</option>${Object.entries(map).map(([k, v]) => `<option value="${k}" ${k === val ? 'selected' : ''}>${esc(v.name || v)}</option>`).join('')}`;
+}
+// коротко риси обраної раси в майстрі створення
+function raceTraitsHint(id) {
+  const tr = R.RACE_TRAITS[id] || [];
+  return tr.length ? `<details class="race-tr"><summary>Риси раси (${tr.length})</summary>${tr.map(([n, d]) => `<p><b>${esc(n)}</b> — <span>${esc(d)}</span></p>`).join('')}</details>` : '';
 }
 function wizStep1() {
   const w = S.wiz;
@@ -1799,8 +1830,9 @@ function wizStep1() {
   const bg = R.BACKGROUNDS[w.backgroundId];
   return `<div class="card">
     <label class="fld"><span>Ім’я персонажа</span><input data-bind="wiz.name" value="${esc(w.name)}" maxlength="60" placeholder="Напр. Арвен Тінь"></label>
-    <label class="fld"><span>Раса</span><select data-bind="wiz.raceId" data-rerender>${opts(R.RACES, w.raceId, 'Обери расу')}</select></label>
-    ${race ? `<small class="hint">${abbrify(`Бонуси: ${Object.entries(race.bonus).map(([a, v]) => `${R.ABILITY_SHORT[a]} +${v}`).join(', ')}${race.choose ? `, +1 до двох інших на вибір` : ''} · швидкість ${race.speed} фт${race.skills ? ` · ${race.skills.map((k) => R.SKILLS[k][0]).join(', ')}` : ''}${race.skillChoice ? ` · ${race.skillChoice} навички на вибір` : ''}`)}</small>` : ''}
+    <label class="fld"><span>Раса</span><select data-bind="wiz.raceId" data-rerender>${raceOpts(w.raceId, 'Обери расу')}</select></label>
+    ${race ? `<small class="hint">${abbrify(`Бонуси: ${race.flex ? '+2 і +1 або +1/+1/+1 на вибір' : `${Object.entries(race.bonus).map(([a, v]) => `${R.ABILITY_SHORT[a]} +${v}`).join(', ')}${race.choose ? `${Object.keys(race.bonus).length ? ', ' : ''}+${race.choose.amount} до ${race.choose.count === 1 ? 'однієї' : race.choose.count === 2 ? 'двох' : race.choose.count} на вибір` : ''}`} · швидкість ${race.speed} фт${race.skills ? ` · ${race.skills.map((k) => R.SKILLS[k][0]).join(', ')}` : ''}${race.skillChoice ? ` · ${race.skillChoice} навички на вибір` : ''}`)}</small>
+      ${raceTraitsHint(w.raceId)}` : ''}
     <label class="fld"><span>Клас</span><select data-bind="wiz.classId" data-rerender>${opts(R.CLASSES, w.classId, 'Обери клас')}</select></label>
     ${cls ? `<small class="hint">${abbrify(`Кість хітів к${cls.hd} · рятівні: ${cls.saves.map((a) => R.ABILITY_SHORT[a]).join(', ')} · навичок: ${cls.skillCount}${cls.caster !== 'none' ? ` · заклинач (${R.ABILITY_SHORT[cls.spellAbility]})` : ''}`)}</small>` : ''}
     <label class="fld"><span>Передісторія</span><select data-bind="wiz.backgroundId" data-rerender>${opts(R.BACKGROUNDS, w.backgroundId, 'Обери передісторію')}</select></label>
@@ -1837,7 +1869,7 @@ function wizStep2() {
       ctrl = `<select data-bind="wiz.assign.${a}" data-rerender style="width:90px" ${pool.length ? '' : 'disabled'}><option value="">—</option>
         ${pool.map((v, i) => `<option value="${i}" ${String(w.assign[a]) === String(i) ? 'selected' : ''} ${taken.has(String(i)) ? 'disabled' : ''}>${v}</option>`).join('')}</select>`;
     }
-    const bonus = (race.bonus[a] || 0) + (race.choose && w.raceChoice.includes(a) ? race.choose.amount : 0);
+    const bonus = raceBonusOf(race, w, a);
     const val = w.method === 'pointbuy' ? w.pb[a] : base ? base[a] : (w.assign[a] !== undefined && w.assign[a] !== '' ? pool[Number(w.assign[a])] : null);
     const total = val != null ? val + bonus : null;
     return `<div class="ln"><span style="min-width:96px">${R.ABILITY_NAMES[a]}</span>${ctrl}
@@ -1845,8 +1877,18 @@ function wizStep2() {
   }).join('');
   h += '</div>';
   if (race.choose) {
-    h += `<div class="card"><h3>Бонус раси: +1 до двох характеристик</h3><div class="chips">${R.ABILITIES.filter((a) => !race.choose.exclude.includes(a))
+    h += `<div class="card"><h3>Бонус раси: +${race.choose.amount} до ${race.choose.count === 1 ? 'однієї характеристики' : `${race.choose.count} характеристик`}</h3><div class="chips wrap">${R.ABILITIES.filter((a) => !race.choose.exclude.includes(a))
       .map((a) => `<button class="chip ${w.raceChoice.includes(a) ? 'on' : ''}" data-act="wizRaceChoice" data-a="${a}">${R.ABILITY_NAMES[a]}</button>`).join('')}</div></div>`;
+  }
+  if (race.flex) {
+    // MPMM: +2 і +1 або +1 до трьох різних
+    const m111 = w.raceMode === '111';
+    const row = (slot, label) => `<div class="fld"><span>${label}</span></div><div class="chips wrap">${R.ABILITIES.map((a) => {
+      const on = m111 ? w.raceChoice.includes(a) : w.raceChoice[slot] === a;
+      return `<button class="chip ${on ? 'on' : ''}" data-act="wizRaceFlex" data-a="${a}" data-slot="${slot}">${R.ABILITY_NAMES[a]}</button>`;
+    }).join('')}</div>`;
+    h += `<div class="card"><h3>Бонуси раси</h3><div class="chips"><button class="chip ${m111 ? '' : 'on'}" data-act="wizRaceMode" data-m="21">+2 і +1</button><button class="chip ${m111 ? 'on' : ''}" data-act="wizRaceMode" data-m="111">+1 / +1 / +1</button></div>
+      ${m111 ? row(0, 'Три різні характеристики +1') : `${row(0, '+2')}${row(1, '+1')}`}</div>`;
   }
   return h;
 }
@@ -2183,7 +2225,7 @@ function editSheetHtml() {
   <p class="hint" style="margin:4px">Майстер може змінювати будь-які значення без обмежень правил. Гравець отримає сповіщення.</p>
   <div class="card"><h3>Основне</h3>
     <label class="fld"><span>Ім’я</span><input data-bind="edit.name" value="${esc(e.name)}" maxlength="60"></label>
-    <div class="grid2"><label class="fld"><span>Раса</span><select data-bind="edit.raceId" data-rerender>${opts(R.RACES, e.raceId, '—')}<option value="custom" ${e.raceId === 'custom' ? 'selected' : ''}>Інша…</option></select></label>
+    <div class="grid2"><label class="fld"><span>Раса</span><select data-bind="edit.raceId" data-rerender>${raceOpts(e.raceId, '—', `<option value="custom" ${e.raceId === 'custom' ? 'selected' : ''}>Інша…</option>`)}</select></label>
     <label class="fld"><span>Клас</span><select data-bind="edit.classId" data-rerender>${opts(R.CLASSES, e.classId, '—')}</select></label></div>
     ${e.raceId === 'custom' ? `<label class="fld"><span>Назва раси</span><input data-bind="edit.raceName" value="${esc(e.raceName || '')}" maxlength="60"></label>` : ''}
     <div class="grid2"><label class="fld"><span>${esc((R.CLASS_DATA[e.classId] || {}).subclassLabel || 'Підклас')}</span><select data-bind="edit.subclassId"><option value="">—</option>
@@ -3139,6 +3181,21 @@ const ACT = {
     const old = w.pb[a];
     w.pb[a] = v;
     if (pbSpent() > R.POINT_BUY_TOTAL) { w.pb[a] = old; toast('Недостатньо очок', true); return; }
+    render();
+  },
+  wizRaceMode: ({ m }) => { S.wiz.raceMode = m; S.wiz.raceChoice = []; render(); },
+  wizRaceFlex: ({ a, slot }) => {
+    const w = S.wiz;
+    if (w.raceMode === '111') {
+      if (w.raceChoice.includes(a)) w.raceChoice = w.raceChoice.filter((x) => x !== a);
+      else if (w.raceChoice.length < 3) w.raceChoice.push(a);
+    } else {
+      const i = Number(slot);
+      const arr = [w.raceChoice[0] || '', w.raceChoice[1] || ''];
+      arr[i] = arr[i] === a ? '' : a;
+      if (arr[1 - i] === a) arr[1 - i] = '';
+      w.raceChoice = arr;
+    }
     render();
   },
   wizRaceChoice: ({ a }) => {

@@ -16,7 +16,7 @@ try { acorn = require('acorn'); walk = require('acorn-walk'); } catch (e) {
 const CYR = /[А-ЯҐЄІЇа-яґєії]/;
 const norm = (s) => s.replace(/\s+/g, ' ').trim();
 const FILES = [['app.js', 'html'], ['worker/index.js', 'msg'], ['shared/rules.js', 'msg'], ['shared/details.js', 'msg'], ['shared/gear.js', 'msg'],
-  ['shared/glossary.js', 'msg'], ['shared/classdata.js', 'msg'], ['data/items.js', 'msg'], ['shared/spells.js', 'msg']];
+  ['shared/glossary.js', 'msg'], ['shared/classdata.js', 'msg'], ['data/items.js', 'msg'], ['shared/spells.js', 'msg'], ['shared/races.js', 'msg']];
 // вирази, що вставляють HTML (розривають текст на окремі вузли)
 const HTMLISH = /<|\bab\(|abbrify\(|map\(abbrify|compAbbr\(|infoBtn\(|Html\(|LOGO\(|footerHtml|textSection\(|hdr\(|empty\(|pickList\(|numIn\(|opts\(/;
 const renum = (seg) => { let i = 0; const map = {}; return seg.replace(/\{(\d+)\}/g, (x, n) => { if (!(n in map)) map[n] = i++; return `{${map[n]}}`; }); };

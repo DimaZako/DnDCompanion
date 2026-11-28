@@ -16,6 +16,7 @@ export const LANGUAGES = {
   common: 'Загальна', dwarvish: 'Дварфійська', elvish: 'Ельфійська', giant: 'Велетнів', gnomish: 'Гномська', goblin: 'Гоблінська',
   halfling: 'Напіврослицька', orc: 'Орківська', abyssal: 'Безодні', celestial: 'Небесна', draconic: 'Драконяча', deep: 'Глибинна',
   infernal: 'Інфернальна', primordial: 'Первісна', sylvan: 'Сильванська', undercommon: 'Підземна',
+  aquan: 'Акванська', gith: 'Гітська', grung: 'Грунгська', leonin: 'Леонінська', loxodon: 'Локсодонська', quori: 'Кворі', vedalken: 'Ведалкенська',
   druidic: 'Друїдська (таємна)', cant: 'Злодійський жаргон',
 };
 export const LANG_CHOOSABLE = Object.keys(LANGUAGES).filter((k) => !['druidic', 'cant'].includes(k));

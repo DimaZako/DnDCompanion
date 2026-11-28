@@ -601,3 +601,9 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .cb-mstep.off { border-left: 3px solid var(--accent); }
 .cb-exc-btn { font-size: 11px; margin-left: 6px; }
 .cb-meco { white-space: normal; }
+/* раси: риси в майстрі створення, додаткові швидкості */
+.race-tr { margin: 6px 0 2px; font-size: 13px; }
+.race-tr summary { cursor: pointer; color: var(--accent); }
+.race-tr p { margin: 6px 0 0; color: var(--hint); }
+.race-tr b { color: var(--text); }
+.stat .spd { white-space: nowrap; }

@@ -1007,7 +1007,7 @@ async function finishEvent(c, room, ev, { silent = false } = {}) {
 }
 
 // ---------- Бій: ініціатива й черговість ----------
-const pcInitMod = (sh) => R.mod(sh.abilities.dex) + (Number(sh.initBonus) || 0);
+const pcInitMod = (sh) => R.initMod(sh);
 const isCombat = (ev) => ev && ev.type === 'combat';
 const combatRows = (c, evId) => all(c.db, 'SELECT * FROM combatants WHERE event_id = ? ORDER BY id', evId);
 // порядок ходів: ініціатива ↓, потім модифікатор ↓, потім раніше доданий; хто ще не кинув — у кінці
@@ -1058,7 +1058,7 @@ async function combatRowOf(c, room, ch) {
   return row ? { ev, cur: row, isTurn: ev.turn_id === row.id } : null;
 }
 // зброя персонажа для правил бою (стара зброя без шкоди — з каталогу)
-async function charWeaponsSrv(c, charId) {
+async function charWeaponsSrv(c, charId, sheet) {
   return (await all(c.db, 'SELECT id, data, qty FROM items WHERE char_id = ?', charId)).map((it) => {
     let d = JSON.parse(it.data);
     if (d.type === 'weapon' && !d.damage && d.catalogId && CATALOG_BY_ID[d.catalogId]) {
@@ -1066,7 +1066,7 @@ async function charWeaponsSrv(c, charId) {
       d = { ...d, damage: b.damage, dmgType: b.dmgType, props: d.props || b.props, ranged: b.ranged, cat: d.cat || b.cat };
     }
     return { id: it.id, d, qty: it.qty };
-  }).filter((w) => w.d.type === 'weapon' || (['staff', 'rod'].includes(w.d.type) && w.d.damage));
+  }).filter((w) => w.d.type === 'weapon' || (['staff', 'rod'].includes(w.d.type) && w.d.damage)).concat(R.naturalWeapons(sheet || {}));
 }
 // накласти ефект на персонажа (той самий стандартний не дублюється — оновлюється тривалість)
 async function putEffect(c, room, ch, key, n, unit, data) {
@@ -1833,7 +1833,7 @@ const OPS = {
     }
     const effects = await loadEffects(c, [ch.id]);
     const lim = R.turnLimits(s, effects);
-    const weapons = await charWeaponsSrv(c, ch.id);
+    const weapons = await charWeaponsSrv(c, ch.id, s);
     const ctx = { t, effects, res: resLeft(s), myTurn: isTurn, weapons };
     // запит до правил
     let req;
@@ -1888,7 +1888,7 @@ const OPS = {
     if (kind === 'attack') {
       const m = req.mode;
       const okW = R.modeWeapons(m, s, weapons, t);
-      const wid = int(itemId, 0, 1e12, 0);
+      const wid = int(itemId, -9, 1e12, 0);
       const w = okW.find((x) => x.id === wid) || (exc && weapons.find((x) => x.id === wid)) || (wid === 0 && exc ? { id: 0, d: null } : null);
       if (!w) fail('Ця зброя не підходить для такої атаки');
       spendTurn(t, o.cost, { attack: m === 'main', apa, lim });
@@ -1959,6 +1959,7 @@ const OPS = {
       spendTurn(t, o.cost, { lim });
       await spendRes(c, room, ch, o.extra);
       if (act === 'ready') t.readied = 1;
+      if (act === 'dash') t.dashed = 1;
       text = `${CB_ACTS_SRV[act]}${to}${costTag}`;
     }
     if (exc) { t.allow = 0; text += ' · виняток майстра'; }
@@ -2089,8 +2090,13 @@ const OPS = {
     else if (kind === 'spellattack') label = str(key, 60).trim() ? `Атака закляттям (${str(key, 60).trim()})` : 'Атака закляттям';
     else if (kind === 'damage' && (key == null || key === '')) label = 'Шкода';
     else if ((kind === 'attack' || kind === 'damage') && String(key) === '0') label = `${kind === 'attack' ? 'Атака' : 'Шкода'}: Беззбройний удар`;
-    else if (kind === 'damage' && !/^\d+$/.test(String(key))) label = `Шкода (${str(key, 60).trim()})`;
-    else if (kind === 'attack' || kind === 'damage') {
+    else if (kind === 'damage' && !/^-?\d+$/.test(String(key))) label = `Шкода (${str(key, 60).trim()})`;
+    else if ((kind === 'attack' || kind === 'damage') && /^-\d$/.test(String(key))) {
+      // природна зброя раси (пазурі, роги, укус…)
+      const nw = R.naturalWeapons(ch.sheet).find((w) => w.id === Number(key));
+      if (!nw) fail('Немає такої природної зброї');
+      label = `${kind === 'attack' ? 'Атака' : 'Шкода'}: ${nw.d.name}`;
+    } else if (kind === 'attack' || kind === 'damage') {
       const it = await first(c.db, 'SELECT data FROM items WHERE id = ? AND char_id = ?', int(key, 0, 1e12, 0), ch.id);
       if (!it) fail('Предмет не знайдено (можливо, його вже змінили). Онови екран.');
       label = `${kind === 'attack' ? 'Атака' : 'Шкода'}: ${JSON.parse(it.data).name}`;
