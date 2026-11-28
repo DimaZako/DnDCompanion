@@ -552,6 +552,7 @@ export function resourceDefs(classId, subclassId, raceId, level, mods) {
   if (classId === 'barbarian' && L < 20) add('rage', 'Лють', RAGES[L - 1], 'long');
   if (classId === 'bard') add('inspiration', 'Бардівське натхнення', Math.max(1, mods.cha), L >= 5 ? 'short' : 'long');
   if (classId === 'cleric' && L >= 2) add('channel', 'Божественний канал', L >= 18 ? 3 : L >= 6 ? 2 : 1, 'short');
+  if (classId === 'cleric' && subclassId === 'war') add('warPriest', 'Жрець війни', Math.max(1, mods.wis), 'long');
   if (classId === 'druid' && L >= 2 && L < 20) add('wildshape', 'Дика подоба', 2, 'short');
   if (classId === 'fighter') {
     add('secondWind', 'Друге дихання', 1, 'short');

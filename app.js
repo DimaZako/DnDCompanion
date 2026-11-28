@@ -522,7 +522,7 @@ function eventBanner(d) {
   return `<div class="ev-banner cb-banner${mine ? ' my' : ''}" data-act="openCombat"><div class="row"><span class="grow">${ti} <b data-notr>${esc(ev.name)}</b>${cb.round ? ` <small>· Раунд ${cb.round}</small>` : ''}</span><span class="chev">›</span></div>
     <div class="cb-st">${st}</div></div>`;
 }
-const CB_ACTS = [['dash', '🏃 Ривок'], ['dodge', '🛡️ Ухилення'], ['disengage', '↩️ Відхід'], ['help', '🤝 Допомога'], ['hide', '🫥 Сховатися'], ['ready', '⏳ Підготовка'], ['search', '🔎 Пошук'], ['move', '👣 Переміщення']];
+const CB_ACTS = [['dash', '🏃 Ривок'], ['dodge', '🛡️ Ухилення'], ['disengage', '↩️ Відхід'], ['help', '🤝 Допомога'], ['hide', '🫥 Сховатися'], ['ready', '⏳ Підготовка'], ['search', '🔎 Пошук'], ['object', '🖐️ Використати об’єкт'], ['move', '👣 Переміщення']];
 // закляття, які персонаж може творити зараз (підготовлені / відомі)
 function cbSpells(ch) {
   const s = ch.sheet;
@@ -533,8 +533,8 @@ function cbSpells(ch) {
     ...(s.spell.spells || []).filter((x) => x.level === 0 || !plan.prep || x.prepared || prepCaster).map((x) => ({ name: x.name, level: x.level })),
   ].sort((a, b) => a.level - b.level || t(a.name).localeCompare(t(b.name), LOCALES[LANG]));
 }
-// ---- хід гравця в бою: витрати дії / бонусної дії, кидок → рішення майстра → шкода ----
-const TURN0 = { action: 0, bonus: 0, attacks: 0, pending: null, dmg: null, last: null };
+// ---- хід гравця в бою: витрати за правилами 5e (R.turnOptions), кидок → рішення майстра → шкода ----
+const TURN0 = R.TURN_BLANK;
 function myCombat(d = S.room) {
   const ev = d && d.room && d.room.event;
   const cb = ev && ev.combat;
@@ -543,18 +543,18 @@ function myCombat(d = S.room) {
   const me = cb.list.find((x) => x.charId === ch.id);
   const cur = cb.list.find((x) => x.id === cb.turnId);
   const mine = !!(cb.round && me && cur && cur.id === me.id);
-  return { ev, cb, ch, me, cur, mine, t: (me && me.turn) || TURN0 };
+  return { ev, cb, ch, me, cur, mine, t: R.turnState(me && me.turn) };
+}
+// контекст для правил: стан ходу, ефекти, ресурси, зброя
+function cbCtx(c) {
+  const ch = c.ch;
+  return { t: c.t, effects: ch.effects || [], myTurn: c.mine, res: Object.fromEntries(R.sheetResources(ch.sheet).map((r) => [r.id, r.max - r.used])),
+    weapons: charWeapons(ch).map(({ it, d }) => ({ id: it.id, d, qty: it.qty })) };
 }
 const cbTarget = (cb, id) => (id ? cb.list.find((x) => x.id === id) : null);
 const cbTo = (cb, id) => { const x = cbTarget(cb, id); return x ? ` → <span data-notr>${esc(cbLabel(x))}</span>` : ''; };
 const ROLL_ASK = { attack: 'Кинь атаку', spellattack: 'Кинь атаку закляттям', check: 'Кинь перевірку' };
-// закляття з довідника за назвою: час творення, опис (для витрати, виду кидка й кубиків шкоди)
-let spellByName = null;
-function spellInfo(name) {
-  if (!spellByName) spellByName = new Map(Object.values(R.SPELLS).map((x) => [x.name, x]));
-  return spellByName.get(name) || null;
-}
-const spellCost = (sp) => (!sp ? 'action' : /бонусн/.test(sp.time) ? 'bonus' : /реакц/.test(sp.time) ? 'free' : 'action');
+const spellInfo = (name) => R.spellByName(name);
 const spellMode = (sp) => (!sp ? 'none' : /атак\S* закляттям/i.test(sp.desc) ? 'attack' : /рятівн/i.test(sp.desc) ? 'save' : 'none');
 // кубики шкоди закляття з опису: замовляння ростуть із рівнем, вищі кола додають кубики
 function spellDamage(sp, slot, lvl) {
@@ -567,19 +567,31 @@ function spellDamage(sp, slot, lvl) {
   return { [m[2]]: Math.min(20, n) };
 }
 // що можна зробити зараз
-function turnCan(t) {
+function turnCan(c) {
+  const t = c.t;
+  const ctx = cbCtx(c);
+  const s = c.ch.sheet;
   const busy = !!(t.pending || t.dmg);
-  return { busy, attack: !busy && (!t.action || t.attacks > 0 || !t.bonus), act: !busy && (!t.action || !t.bonus), spent: !!(t.action && !t.attacks && t.bonus) };
+  const lim = R.turnLimits(s, ctx.effects);
+  const modes = R.attackModeList(s, ctx);
+  const left = (cost) => !R.turnCostLeft(t, cost, lim, '');
+  const acts = left('action') || left('bonus') || (lim.haste && left('haste'));
+  const anyAtk = modes.some((m) => m.ok);
+  const block = !!lim.incap && !t.allow;
+  return { busy, lim, modes, block, attack: !busy && !block && (anyAtk || !!t.allow), act: !busy && !block && (acts || !!t.allow), spent: !acts && !anyAtk, react: left('reaction') && !block };
 }
-// чим платимо за дію за замовчуванням: дія, а якщо вже витрачена — бонусна
-function defaultCost(k, t, extra) {
-  if (k === 'attack') return t.attacks > 0 || !t.action ? 'action' : 'bonus';
-  if (k === 'move') return 'free';
-  const want = extra || 'action';
-  if (want === 'free') return 'free';
-  if (want === 'action' && t.action) return 'bonus';
-  if (want === 'bonus' && t.bonus && !t.action) return 'action';
-  return want;
+// позначки витрат: ● вільно, ○ витрачено
+function ecoPills(t, lim) {
+  const pill = (on, label) => `<span class="cb-eco${on ? '' : ' off'}">${on ? '●' : '○'} <span>${label}</span></span>`;
+  return `${pill(!t.action, 'Дія')}${t.attacks > 0 ? `<span class="cb-eco atk">⚔️ <span>Атак лишилось</span>: ${t.attacks}</span>` : ''}${pill(!t.bonus, 'Бонусна дія')}`
+    + `${t.battacks > 0 ? `<span class="cb-eco atk">👊 <span>Ударів шквалу</span>: ${t.battacks}</span>` : ''}${pill(!t.reaction && !lim.slow, 'Реакція')}${lim.haste ? pill(!t.haste, 'Дія прискорення') : ''}`;
+}
+// виняток від майстра: дозволено / чекаємо / відмовлено
+function excLine(t) {
+  if (t.allow) return '<div class="cb-exc ok">🔓 <span>Майстер дозволив виняток — наступна дія може коштувати що завгодно</span></div>';
+  if (t.ask) return `<div class="cb-exc wait">⏳ <span>Чекаємо відповіді майстра</span>: <span data-notr>${esc(t.ask)}</span></div>`;
+  if (t.denied) return `<div class="cb-exc no">✗ <span>Майстер не дозволив</span>: <span data-notr>${esc(t.denied)}</span></div>`;
+  return '';
 }
 // результат останньої дії в ході
 function lastLine(t, cb) {
@@ -624,6 +636,9 @@ function cbPreset(ch, t) {
       purpose = `damage:${p.itemId || 0}`;
       const a = diceAuto(ch, purpose);
       if (a) { dice = { ...a.dice }; mod = a.mod; }
+      // тупий кінець древка — к4; друга зброя — без модифікатора (крім від’ємного), якщо немає стилю «Бій двома зброями»
+      if (p.dice) dice = { ...p.dice };
+      if (p.noMod) mod = Math.min(0, mod);
     } else {
       spell = p.spell || '';
       const sp = spellInfo(spell);
@@ -643,10 +658,14 @@ function cbPreset(ch, t) {
 // після оновлення кімнати: попадання → вкладка 🎲 зі шкодою; промах, перевірка чи кинута шкода → назад до вибору дії
 function cbAutoStep(d) {
   const c = myCombat(d);
-  const t = c && c.mine ? c.t : null;
+  const t = c && c.me && c.cb.round ? c.t : null;
   const sig = !t ? '' : t.dmg ? `dmg:${t.dmg.rollId}` : t.pending ? '' : t.last ? `last:${t.last.rollId || ''}:${t.last.result || ''}:${t.last.dmgTotal == null ? '' : t.last.dmgTotal}` : '';
   const prev = S.cbSig;
   S.cbSig = sig;
+  // відповідь майстра на прохання про виняток
+  const ex = t ? (t.allow ? 'allow' : t.denied ? `no:${t.denied}` : '') : '';
+  if (S.cbEx !== undefined && ex && ex !== S.cbEx) toast(t.allow ? '🔓 Майстер дозволив виняток' : '✗ Майстер не дозволив виняток', !t.allow);
+  S.cbEx = ex;
   if (prev === undefined || !sig || sig === prev || !t) return;
   if (t.dmg) {
     cbPreset(c.ch, t);
@@ -656,10 +675,69 @@ function cbAutoStep(d) {
   }
   const l = t.last;
   S.tab = 'combat';
-  const more = !turnCan(t).spent;
+  const more = c.mine && !turnCan(c).spent;
   if (l.dmgTotal != null) toast(more ? `🎯 Шкода ${l.dmgTotal} — обери наступну дію` : `🎯 Шкода ${l.dmgTotal} — дії витрачено`);
   else if (l.kind === 'check') toast(l.result === 2 ? (more ? '✓ Успіх — обери наступну дію' : '✓ Успіх') : (more ? '✗ Провал — обери наступну дію' : '✗ Провал'));
   else toast(more ? '✗ Промах — обери наступну дію' : '✗ Промах');
+}
+// запит до правил із вікна дії
+function cbReq(m, c) {
+  const ch = c.ch;
+  if (m.k === 'attack') return { kind: 'attack', mode: m.mode || 'main' };
+  if (m.k === 'spell') { const sp = cbSpells(ch)[m.spell]; return sp ? { kind: 'spell', name: sp.name } : null; }
+  if (m.k === 'item') { const it = (ch.items || []).find((x) => String(x.id) === String(m.item)); return it ? { kind: 'item', item: it.data } : null; }
+  if (m.k === 'reaction') {
+    const v = String(m.ract || '');
+    if (v === 'attack') return { kind: 'attack', mode: 'reaction' };
+    if (v.startsWith('sp:')) { const sp = cbSpells(ch).filter((x) => R.spellCastCost(R.spellByName(x.name)) === 'reaction')[Number(v.slice(3))]; return sp ? { kind: 'spell', name: sp.name } : null; }
+    if (v.startsWith('res:')) return { kind: 'feature', resId: v.slice(4) };
+    if (v.startsWith('rf:')) return { kind: 'rfeat', name: v.slice(3) };
+    return null;
+  }
+  if (!m.act) return null;
+  if (m.act === 'check') return { kind: 'check', key: m.check };
+  if (m.act.startsWith('res:')) return { kind: 'feature', resId: m.act.slice(4) };
+  return { kind: 'std', act: m.act };
+}
+// чи можна натиснути «Записати»
+function cbSaveOk(m, c) {
+  const req = cbReq(m, c);
+  if (!req) return false;
+  if (req.kind === 'attack' && m.item === '') return false;
+  if (c.t.allow) return true;
+  const r = R.turnOptions(c.ch.sheet, req, cbCtx(c));
+  const o = r.opts.find((x) => x.cost === m.cost);
+  return !r.why && !!o && o.ok;
+}
+// після вибору — витрата за замовчуванням (перша вільна за правилами)
+function cbFixCost(m, c) {
+  const req = cbReq(m, c);
+  if (!req) { m.cost = ''; return; }
+  const r = R.turnOptions(c.ch.sheet, req, cbCtx(c));
+  const cur = r.opts.find((o) => o.cost === m.cost);
+  if (c.t.allow ? !m.cost : !cur || !cur.ok) m.cost = (R.defaultOption(r) || { cost: c.t.allow ? 'action' : '' }).cost;
+  // атака: зброя, що підходить режиму
+  if (req.kind === 'attack') {
+    const ws = R.modeWeapons(req.mode, c.ch.sheet, cbCtx(c).weapons, c.t);
+    if (!c.t.allow && !ws.some((w) => String(w.id) === String(m.item))) m.item = ws.length ? String(ws[0].id) : '';
+  }
+}
+// опис дії для прохання про виняток
+function cbAskText(m, c, cost) {
+  const ch = c.ch;
+  const req = cbReq(m, c) || {};
+  let a = '';
+  if (req.kind === 'attack') {
+    const w = cbCtx(c).weapons.find((x) => String(x.id) === String(m.item));
+    a = `⚔️ ${t(R.ATTACK_MODES[req.mode].name)}${w ? `: ${w.d.name}` : ''}`;
+  } else if (req.kind === 'spell') a = `✨ ${t(req.name)}`;
+  else if (req.kind === 'item') a = `🧪 ${req.item.name}`;
+  else if (req.kind === 'check') { const [kk, kv] = req.key.split(':'); a = `🎲 ${t(kk === 'skill' ? R.SKILLS[kv][0] : R.ABILITY_NAMES[kv])}`; }
+  else if (req.kind === 'feature') { const r = R.sheetResources(ch.sheet).find((x) => x.id === req.resId); a = `🌟 ${r ? t(r.name) : ''}`; }
+  else if (req.kind === 'rfeat') a = '⚡ ' + t('Реакція');
+  else if (req.kind === 'std') a = t((CB_ACTS.find((x) => x[0] === req.act) || [0, ''])[1]);
+  else a = t('Дія поза правилами');
+  return cost ? `${a} — ${t(R.COST_NAMES[cost])}` : a;
 }
 // Вкладка бою гравця: черговість, стан ворогів, дії у свій хід
 function combatTab(ch, dv) {
@@ -682,21 +760,33 @@ function combatTab(ch, dv) {
     return `<div class="cb-row ro${turn ? ' on' : ''}${dead ? ' dead' : ''}${me && x.id === me.id ? ' me' : ''}"><span class="cb-init ro">${x.init == null ? '⏳' : x.init}</span>
       <span class="cb-ic">${esc(cbIcon(x))}</span><span class="grow cb-nm"><span data-notr>${esc(cbLabel(x))}</span>${me && x.id === me.id ? ' <small class="hint">(ти)</small>' : ''}</span>${right}</div>`;
   }).join('')}</div>`;
+  const c = myCombat();
   if (mine) {
-    const tn = me.turn || TURN0;
-    const can = turnCan(tn);
-    const pill = (on, label) => `<span class="cb-eco${on ? '' : ' off'}">${on ? '●' : '○'} <span>${label}</span></span>`;
+    const tn = c.t;
+    const can = turnCan(c);
     const dis = (ok) => (ok ? '' : ' disabled');
+    const more = tn.attacks > 0 || tn.battacks > 0;
     h += stepCard(tn, cb, 'combat');
     h += `<div class="card cb-acts"><b class="cb-my">🎯 Твій хід — що робиш?</b>
-      <div class="cb-ecos">${pill(!tn.action, 'Дія')}${tn.attacks > 0 ? `<span class="cb-eco atk">⚔️ <span>Атак лишилось</span>: ${tn.attacks}</span>` : ''}${pill(!tn.bonus, 'Бонусна дія')}</div>
+      <div class="cb-ecos">${ecoPills(tn, can.lim)}</div>
+      ${can.lim.incap ? `<div class="cb-exc no">😵 <span>${esc(can.lim.incap)}</span></div>` : ''}${excLine(tn)}
       ${!can.busy && tn.last ? `<div class="cb-last">${lastLine(tn, cb)}</div>` : ''}
-      <div class="cb-grid"><button class="btn${tn.attacks > 0 ? ' primary' : ''}${dis(can.attack)}" data-act="cbActModal" data-k="attack">${tn.attacks > 0 ? '⚔️ Ще атака' : '⚔️ Атака'}</button><button class="btn${dis(can.act)}" data-act="cbActModal" data-k="spell">✨ Закляття</button>
+      <div class="cb-grid"><button class="btn${more ? ' primary' : ''}${dis(can.attack)}" data-act="cbActModal" data-k="attack">${tn.attacks > 0 ? '⚔️ Ще атака' : tn.battacks > 0 ? '👊 Ще удар' : '⚔️ Атака'}</button><button class="btn${dis(can.act)}" data-act="cbActModal" data-k="spell">✨ Закляття</button>
       <button class="btn${dis(can.act)}" data-act="cbActModal" data-k="item">🧪 Предмет</button><button class="btn${dis(!can.busy)}" data-act="cbActModal" data-k="std">🏃 Інші дії</button></div>
       ${can.spent && !can.busy ? '<p class="hint cb-spent">Дію й бонусну дію витрачено — можна завершити хід.</p>' : ''}
       <button class="btn${can.spent && !can.busy ? ' primary' : ''} block mt" data-act="cbEndTurn">✅ Завершити хід</button>
-      <p class="hint">Атака чи перевірка: кинь кубики → майстер позначить результат → при попаданні одразу кидок шкоди.</p></div>`;
-  } else if (cb.round) h += `<p class="hint center">Зараз хід: <b data-notr>${esc(cur ? cbLabel(cur) : '—')}</b>. Дії з’являться, коли настане твоя черга.</p>`;
+      <p class="hint">Витрати — за правилами 5e: що недоступне, позначено 🔒, і можна попросити виняток у майстра. Атака чи перевірка: кинь кубики → майстер позначить результат → при попаданні одразу кидок шкоди.</p></div>`;
+  } else if (cb.round && me) {
+    // чужий хід: реакція (атака при нагоді, закляття-реакція, уміння) — раз до початку свого ходу
+    const tn = c.t;
+    const can = turnCan(c);
+    h += stepCard(tn, cb, 'combat');
+    h += `<div class="card cb-acts cb-react"><div class="row"><b class="grow">⚡ <span>Реакція</span></b><span class="cb-eco${can.react ? '' : ' off'}">${can.react ? '●' : '○'} <span>${can.react ? 'доступна' : 'використано'}</span></span></div>
+      <p class="hint">Зараз хід: <b data-notr>${esc(cur ? cbLabel(cur) : '—')}</b>. Реакцію можна використати й у чужий хід — раз до початку твого.</p>
+      ${can.lim.incap ? `<div class="cb-exc no">😵 <span>${esc(can.lim.incap)}</span></div>` : ''}${excLine(tn)}
+      ${!can.busy && tn.last && tn.last.mode === 'reaction' ? `<div class="cb-last">${lastLine(tn, cb)}</div>` : ''}
+      <button class="btn block mt${can.react && !can.busy ? '' : ' disabled'}" data-act="cbActModal" data-k="reaction">⚡ Реакція</button></div>`;
+  }
   else if (me && me.init != null) h += '<p class="hint center">Чекаємо, поки майстер почне бій.</p>';
   return h;
 }
@@ -878,9 +968,15 @@ const findCb = (id) => {
 };
 // у вікні події майстра: черговість, ХП ворогів, керування ходами
 // Під гравцем, чий хід: що він робить зараз — кидок на рішенні (✓ / ✗), очікування шкоди, кинута шкода (швидко зняти з ворога)
-function masterStep(cb, x) {
-  const tn = x.turn || TURN0;
-  const eco = `<span class="cb-meco">${tn.action ? '○' : '●'} <span>Дія</span>${tn.attacks > 0 ? ` (⚔️ ${tn.attacks})` : ''} · ${tn.bonus ? '○' : '●'} <span>Бонусна дія</span></span>`;
+// чи показувати майстру рядок дій гравця поза його ходом (реакція, прохання, виняток)
+const masterBusy = (x) => { const t = R.turnState(x.turn); return !!(t.pending || t.dmg || t.ask || t.allow || (t.last && t.last.mode === 'reaction' && t.last.dmgTotal != null && !t.last.applied)); };
+function masterStep(cb, x, turn = true) {
+  const tn = R.turnState(x.turn);
+  const eco = turn ? `<span class="cb-meco">${tn.action ? '○' : '●'} <span>Дія</span>${tn.attacks > 0 ? ` (⚔️ ${tn.attacks})` : ''} · ${tn.bonus ? '○' : '●'} <span>Бонусна дія</span> · ${tn.reaction ? '○' : '●'} <span>Реакція</span>`
+    + `${turn ? ` <button class="link cb-exc-btn" data-act="cbAllow" data-id="${x.id}" data-v="${tn.allow ? '0' : '1'}">${tn.allow ? '✗ <span>Скасувати виняток</span>' : '🔓 <span>Виняток</span>'}</button>` : ''}</span>`
+    : '<span class="cb-meco">⚡ <span>Реакція поза ходом</span></span>';
+  const ask = tn.ask ? `<div class="cb-mask">🙋 <span class="grow" data-notr>${esc(tn.ask)}</span><button class="btn sm primary" data-act="cbAllow" data-id="${x.id}" data-v="1">🔓 Дозволити</button><button class="btn sm" data-act="cbAllow" data-id="${x.id}" data-v="0">✗</button></div>`
+    : tn.allow ? '<div class="cb-mask ok">🔓 <span>Виняток дозволено на одну дію</span></div>' : '';
   const p = tn.dmg || tn.pending;
   let body = '';
   if (p && p.rollId) {
@@ -895,7 +991,7 @@ function masterStep(cb, x) {
     body = `<span class="grow">🗡 <span>Шкода</span>${cbTo(cb, tn.last.target)}: <b>${tn.last.dmgTotal}</b></span>
       ${tg && tg.kind === 'npc' && tg.hp > 0 && !done ? `<button class="btn sm primary" data-act="cbDmgApply" data-id="${tg.id}" data-n="${tn.last.dmgTotal}" data-r="${tn.last.dmgRollId}">−${tn.last.dmgTotal} <span>ХП</span></button>` : done ? '<small class="hint">✓ знято</small>' : ''}`;
   } else if (tn.last) body = `<span class="grow">${lastLine(tn, cb)}</span>${tn.last.rollId ? markBtns({ id: tn.last.rollId, kind: tn.last.kind === 'check' ? 'skill' : tn.last.kind, mark: tn.last.result }, true) : ''}`;
-  return `<div class="cb-mstep${p && p.rollId && !tn.dmg ? ' ask' : ''}">${body || '<span class="grow hint">Обирає дію…</span>'}${eco}</div>`;
+  return `<div class="cb-mstep${p && p.rollId && !tn.dmg ? ' ask' : ''}${turn ? '' : ' off'}">${body || (turn ? '<span class="grow hint">Обирає дію…</span>' : '')}${ask}${eco}</div>`;
 }
 function combatPanel(ev) {
   const cb = ev.combat;
@@ -910,7 +1006,7 @@ function combatPanel(ev) {
       <span class="grow cb-nm"${x.kind === 'npc' ? ` data-act="cbStat" data-id="${x.id}"` : ''}><span data-notr>${esc(cbLabel(x))}</span>${x.kind === 'npc' ? ` <small class="hint" data-notr>${esc(abLoc('КЗ'))} ${x.ac}</small>` : ''}</span>
       <button class="cb-hp${x.kind === 'pc' ? ' pc' : ''}" data-act="cbHpModal" data-id="${x.id}" data-notr>${x.hp}/${x.hpMax}</button>
       ${x.kind === 'npc' ? `<button class="cb-x" data-act="cbRemove" data-id="${x.id}" aria-label="${esc(t('Прибрати з бою'))}">✕</button>` : '<span class="cb-x"></span>'}</div>
-      ${turn && x.kind === 'pc' && cb.round ? masterStep(cb, x) : ''}`;
+      ${x.kind === 'pc' && cb.round && (turn || masterBusy(x)) ? masterStep(cb, x, turn) : ''}`;
   }).join('');
   return `<div class="cb">
     <div class="row cb-head"><b class="grow">🎯 Ініціатива</b><span class="hint">${cb.round ? `Раунд ${cb.round}` : 'Збір ініціативи'}</span></div>
@@ -1108,6 +1204,11 @@ function diceAuto(ch, purpose) {
   if (kind === 'damage' && !key) return null;
   // беззбройний удар: атака — СИЛ + майстерність, шкода — 1 + СИЛ
   if ((kind === 'attack' || kind === 'damage') && key === '0') {
+    // монах: кістка бойових мистецтв і краща з СИЛ / СПР
+    if (s.classId === 'monk') {
+      const mm = Math.max(R.mod(s.abilities.str), R.mod(s.abilities.dex));
+      return kind === 'attack' ? { dice: d20, mod: R.sheetProf(s) + mm } : { dice: { [R.martialDie(s)]: 1 }, mod: mm };
+    }
     const sm = R.mod(s.abilities.str);
     return kind === 'attack' ? { dice: d20, mod: R.sheetProf(s) + sm } : { dice: {}, mod: Math.max(1, 1 + sm) };
   }
@@ -1166,7 +1267,7 @@ function diceTab(ch, dv) {
   </select>`;
   const any = DICE.some((sd) => st.dice[sd]) || (st.purpose.startsWith('damage:') && st.mod > 0);
   const cbc = myCombat();
-  let h = cbc && cbc.mine ? stepCard(cbc.t, cbc.cb, 'dice') : '';
+  let h = cbc && cbc.me && cbc.cb.round ? stepCard(cbc.t, cbc.cb, 'dice') : '';
   h += `<div class="lines dice-box"><h3>🎲 Кидок</h3>
     <label class="fld"><span>На що</span>${sel}</label>
     ${fxHints(ch, st.purpose)}
@@ -2203,58 +2304,100 @@ const MODALS = {
     <div class="btns"><button class="btn" data-act="cbInitRoll">🎲 Кинути к20 ${fm(x.initMod || 0)}</button><button class="btn primary" data-act="cbInitSave">Зберегти</button></div>`;
   },
   cbAct: (m) => {
-    const ch = currentChar();
-    const ev = S.room.room.event;
-    if (!ch || !ev || !ev.combat) return null;
-    const me = ev.combat.list.find((x) => x.charId === ch.id);
-    const chip = (f, v, label, notr, dis) => `<button class="chip ${String(m[f]) === String(v) ? 'on' : ''}${dis ? ' disabled' : ''}" data-act="cbActPick" data-f="${f}" data-v="${esc(v)}"${notr ? ' data-notr' : ''}>${label}</button>`;
-    const foes = ev.combat.list.filter((x) => x.kind === 'npc' && x.state !== 'dead');
-    const allies = ev.combat.list.filter((x) => x.kind === 'pc' && (!me || x.id !== me.id));
+    const c = myCombat();
+    if (!c || !c.me) return null;
+    const { ch, cb, me } = c;
+    const tn = c.t;
+    const s = ch.sheet;
+    const ctx = cbCtx(c);
+    cbFixCost(m, c);
+    const chip = (f, v, label, notr, dis, extra = '') => `<button class="chip ${String(m[f]) === String(v) ? 'on' : ''}${dis ? ' disabled' : ''}" data-act="cbActPick" data-f="${f}" data-v="${esc(v)}"${notr ? ' data-notr' : ''}>${label}${extra}</button>`;
+    const foes = cb.list.filter((x) => x.kind === 'npc' && x.state !== 'dead');
+    const allies = cb.list.filter((x) => x.kind === 'pc' && x.id !== me.id);
     const targets = `<div class="fld"><span>Ціль</span></div><div class="chips wrap">${chip('target', '', esc(t('без цілі')), true)}${[...foes, ...allies].map((x) => chip('target', x.id, `${esc(cbIcon(x))} ${esc(cbLabel(x))}`, true)).join('')}</div>`;
-    // чим платимо: дія / бонусна дія / без витрати
-    const tn = (me && me.turn) || TURN0;
-    const atkLeft = m.k === 'attack' && tn.attacks > 0;
-    const costs = `<div class="fld"><span>Витрата</span></div><div class="chips wrap cb-costs">${chip('cost', 'action', atkLeft ? `⚔️ ${esc(t('Атака з дії'))} (${tn.attacks})` : `● ${esc(t('Дія'))}`, true, tn.action && !atkLeft)}${chip('cost', 'bonus', `◐ ${esc(t('Бонусна дія'))}`, true, !!tn.bonus)}${chip('cost', 'free', esc(t('Без витрати')), true)}</div>`;
-    if (m.k === 'attack') {
-      const ws = charWeapons(ch);
-      return `${hdr(atkLeft ? '⚔️ Ще атака' : '⚔️ Атака', 'Кинь атаку — майстер позначить попадання')}
-      <div class="fld"><span>Чим</span></div><div class="chips wrap">${ws.map(({ it }) => chip('item', it.id, esc(it.data.name))).join('')}${chip('item', '0', esc(t('Беззбройний удар')), true)}</div>
-      ${targets}${costs}
-      <button class="btn primary block mt2" data-act="cbActSave">⚔️ Атакувати — до кидка 🎲</button>`;
-    }
-    if (m.k === 'spell') {
-      const list = cbSpells(ch);
+    const req = cbReq(m, c);
+    // витрата: дозволене правилами (зайняте — неактивне), решта — 🔒, за винятком майстра — будь-що
+    const costBlock = () => {
+      if (!req) return '';
+      const r = R.turnOptions(s, req, ctx);
+      const lim = R.turnLimits(s, ctx.effects);
+      const shown = new Set(r.opts.map((o) => o.cost));
+      const rest = ['action', 'bonus', 'reaction', 'free', ...(lim.haste ? ['haste'] : [])].filter((k) => !shown.has(k));
+      const label = (k, note) => `${R.COST_ICONS[k]} <span>${R.COST_NAMES[k]}</span>${note ? ` <small>· <span>${esc(note)}</span></small>` : ''}`;
+      const sel = r.opts.find((o) => o.cost === m.cost);
+      let h = `<div class="fld"><span>Витрата</span></div><div class="chips wrap cb-costs">${r.opts.map((o) => chip('cost', o.cost, label(o.cost, o.note), false, !o.ok && !tn.allow)).join('')}
+        ${rest.map((k) => (tn.allow ? chip('cost', k, label(k)) : `<button class="chip locked" data-act="cbLocked" data-v="${k}">🔒 <span>${R.COST_NAMES[k]}</span></button>`)).join('')}</div>`;
+      const why = !tn.allow && (r.why || (r.opts.length && !r.opts.some((o) => o.ok) ? (r.opts[0].why || '') : '') || (sel && !sel.ok ? sel.why : ''));
+      if (why) h += `<p class="hint cb-why">⛔ <span>${esc(why)}</span></p>`;
+      if (tn.allow) h += '<p class="hint cb-why ok">🔓 <span>Виняток від майстра — обери будь-яку витрату</span></p>';
+      else if (tn.ask) h += `<p class="hint">⏳ <span>Чекаємо відповіді майстра</span>: <span data-notr>${esc(tn.ask)}</span></p>`;
+      else h += `<button class="link cb-ask" data-act="cbAsk">🙋 Інакше — попросити виняток у майстра</button>`;
+      return h;
+    };
+    const okSave = cbSaveOk(m, c);
+    const saveBtn = (label) => `<button class="btn primary block mt2${okSave ? '' : ' disabled'}" data-act="cbActSave">${label}</button>`;
+    const modeName = (x) => `<span>${esc(x.name)}</span>${x.note ? ` <small>· <span>${esc(x.note)}</span></small>` : ''}`;
+    const weaponChips = (mode) => {
+      const ws = R.modeWeapons(mode, s, ctx.weapons, tn);
+      const all0 = tn.allow ? [...ctx.weapons, { id: 0, d: null }] : ws;
+      return all0.length ? `<div class="fld"><span>Чим</span></div><div class="chips wrap">${all0.map((w) => (w.id ? chip('item', w.id, esc(w.d.name), true) : chip('item', '0', esc(t('Беззбройний удар')), true))).join('')}</div>`
+        : '<p class="hint">Немає зброї для такої атаки</p>';
+    };
+    const spellBlock = (list) => {
       const sp = list[m.spell];
-      const max = R.sheetSlots(ch.sheet);
-      const used = ch.sheet.spell.slotsUsed || [];
+      const max = R.sheetSlots(s);
+      const used = s.spell.slotsUsed || [];
       const slots = sp && sp.level > 0 ? Array.from({ length: 9 }, (_, i) => i + 1).filter((L) => L >= sp.level && (max[L - 1] || 0) > 0) : [];
-      return `${hdr('✨ Закляття', 'Комірка витрачається автоматично')}
-      ${list.length ? `<div class="chips wrap">${list.map((x, i) => chip('spell', i, `${x.level ? `<small>${x.level}</small> ` : ''}${esc(x.name)}`)).join('')}</div>` : '<p class="hint">Закляття немає</p>'}
+      return `${list.length ? `<div class="chips wrap">${list.map((x, i) => chip('spell', i, `${x.level ? `<small>${x.level}</small> ` : ''}${esc(x.name)}`)).join('')}</div>` : '<p class="hint">Закляття немає</p>'}
       ${sp && sp.level > 0 ? `<div class="fld"><span>Комірка</span></div><div class="chips wrap">${slots.map((L) => {
         const free = (max[L - 1] || 0) - (used[L - 1] || 0);
         return chip('slot', L, `${L} коло · ${free}/${max[L - 1]}`, false, free <= 0);
       }).join('') || '<p class="hint">Немає комірок потрібного кола</p>'}</div>` : sp ? '<p class="hint">Замовляння — без комірки.</p>' : ''}
       ${sp ? `<div class="fld"><span>Кидок</span></div><div class="chips wrap">${chip('mode', 'attack', '🎯 Атака закляттям')}${chip('mode', 'save', '🛡️ Рятівний кидок цілі')}${chip('mode', 'none', 'Без кидка')}</div>
-      ${targets}${costs}` : ''}
-      <button class="btn primary block mt2${sp ? '' : ' disabled'}" data-act="cbActSave">${sp && m.mode === 'attack' ? '✨ Творити — до кидка 🎲' : '✨ Творити'}</button>`;
+      ${targets}${costBlock()}` : ''}`;
+    };
+    if (m.k === 'attack') {
+      const modes = R.attackModeList(s, ctx);
+      const cur0 = modes.find((x) => x.mode === m.mode);
+      return `${hdr(tn.attacks > 0 ? '⚔️ Ще атака' : '⚔️ Атака', 'Кинь атаку — майстер позначить попадання')}
+      ${modes.length > 1 ? `<div class="fld"><span>Як атакуєш</span></div><div class="chips wrap cb-modes">${modes.map((x) => chip('mode', x.mode, modeName(x), false, !x.ok && !tn.allow)).join('')}</div>
+        ${cur0 && !cur0.ok && cur0.why && !tn.allow ? '' : modes.filter((x) => !x.ok && x.why).map((x) => `<p class="hint cb-mwhy">${esc(t(x.name))}: <span>${esc(x.why)}</span></p>`).join('')}` : ''}
+      ${weaponChips(m.mode)}${targets}${costBlock()}
+      ${saveBtn('⚔️ Атакувати — до кидка 🎲')}`;
+    }
+    if (m.k === 'spell') {
+      const list = cbSpells(ch);
+      return `${hdr('✨ Закляття', 'Комірка витрачається автоматично')}${spellBlock(list)}
+      ${saveBtn(list[m.spell] && m.mode === 'attack' ? '✨ Творити — до кидка 🎲' : '✨ Творити')}`;
     }
     if (m.k === 'item') {
       const its = (ch.items || []).filter((it) => R.isConsumable(it.data) && it.qty > 0);
-      return `${hdr('🧪 Предмет', 'Використання зменшує кількість')}
-      ${its.length ? `${its.map((it) => `<div class="row cb-item"><span class="grow">${esc(it.data.name)} <small class="hint">×${it.qty}</small></span><button class="btn sm primary" data-act="cbUseItem" data-id="${it.id}">Використати</button></div>`).join('')}${costs}`
-        : empty('🎒', 'Витратних предметів немає')}`;
+      return `${hdr('🧪 Предмет', 'Зілля — бонусною дією; напоїти іншого — дією')}
+      ${its.length ? `<div class="chips wrap">${its.map((it) => chip('item', it.id, `${esc(ITEM_ICON[it.data.type] || '📦')} ${esc(it.data.name)} <small>×${it.qty}</small>`, true)).join('')}</div>
+        ${m.item ? costBlock() : ''}${saveBtn('🧪 Використати')}` : empty('🎒', 'Витратних предметів немає')}`;
     }
-    const res = R.sheetResources(ch.sheet).filter((r) => r.used < r.max);
-    const s = ch.sheet;
-    const checks = `<select data-bind="modal.check">${[['Перевірки характеристик', R.ABILITIES.map((a) => [`ability:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.mod(s.abilities[a]))})`])],
+    if (m.k === 'reaction') {
+      const list = cbSpells(ch).filter((x) => R.spellCastCost(R.spellByName(x.name)) === 'reaction');
+      const res = R.sheetResources(s).filter((r) => R.turnOptions(s, { kind: 'feature', resId: r.id }, ctx).opts.length);
+      const rf = [...R.reactionFeatures(s), ...(tn.readied ? [{ id: 'ready', name: 'Підготовлена дія' }] : [])];
+      const pick = String(m.ract || '');
+      return `${hdr('⚡ Реакція', 'Раз до початку твого ходу')}
+      <div class="chips wrap">${chip('ract', 'attack', '⚔️ Атака при нагоді')}${list.map((x, i) => chip('ract', `sp:${i}`, `✨ ${esc(x.name)}`)).join('')}
+        ${res.map((r) => chip('ract', `res:${r.id}`, `🌟 ${esc(r.name)} <small>${r.max - r.used}/${r.max}</small>`)).join('')}
+        ${rf.map((f) => chip('ract', `rf:${f.id}`, `⚡ ${esc(f.name)}`)).join('')}</div>
+      ${pick === 'attack' ? `${weaponChips('reaction')}${targets}${costBlock()}` : pick.startsWith('sp:') ? `${spellBlock(list.map((x, i) => (i === Number(pick.slice(3)) ? x : null)).filter(Boolean))}` : pick ? `${targets}${costBlock()}` : ''}
+      ${saveBtn(pick === 'attack' ? '⚔️ Атакувати — до кидка 🎲' : '⚡ Використати')}`;
+    }
+    const res = R.sheetResources(s).filter((r) => r.used < r.max && r.id !== 'warPriest');
+    const checks = `<select data-bind="modal.check" data-rerender>${[['Перевірки характеристик', R.ABILITIES.map((a) => [`ability:${a}`, `${R.ABILITY_NAMES[a]} (${fm(R.mod(s.abilities[a]))})`])],
       ['Навички', R.SKILL_IDS.map((k) => [`skill:${k}`, `${R.SKILLS[k][0]} (${fm(R.skillValue(s, k))})`])]]
       .map(([g, xs]) => `<optgroup label="${esc(t(g))}">${xs.map(([v, l]) => `<option value="${v}"${m.check === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select>`;
     return `${hdr('🏃 Інші дії', 'Стандартні дії, перевірки та вміння класу')}
       <div class="chips wrap">${CB_ACTS.map(([k, n]) => chip('act', k, n)).join('')}${chip('act', 'check', '🎲 Перевірка')}</div>
       ${m.act === 'check' ? `<label class="fld"><span>Що перевіряєш</span>${checks}</label>` : ''}
       ${res.length ? `<div class="fld"><span>Уміння класу</span></div><div class="chips wrap">${res.map((r) => chip('act', `res:${r.id}`, `🌟 ${esc(r.name)} <small>${r.max - r.used}/${r.max}</small>`)).join('')}</div>` : ''}
-      ${targets}${m.act ? costs : ''}
-      <button class="btn primary block mt2${m.act ? '' : ' disabled'}" data-act="cbActSave">${m.act === 'check' ? '🎲 Перевірка — до кидка' : 'Записати'}</button>`;
+      ${m.act ? `${targets}${costBlock()}` : ''}
+      ${saveBtn(m.act === 'check' ? '🎲 Перевірка — до кидка' : 'Записати')}`;
   },
   monView: (m) => {
     const o = monOf(m.mon, m.data);
@@ -3499,53 +3642,79 @@ const ACT = {
   },
   cbActModal: ({ k }) => {
     const c = myCombat();
-    const tn = (c && c.t) || TURN0;
-    if (turnCan(tn).busy) { toast('Спершу заверши попередню дію', true); return; }
-    // ціль за замовчуванням — та сама, що й в останній дії
-    const last = (k === 'attack' || k === 'spell') && tn.last && tn.last.target && c.cb.list.find((x) => x.id === tn.last.target && !(x.kind === 'npc' && x.state === 'dead'));
-    openModal({ type: 'cbAct', k, item: k === 'attack' && tn.last && tn.last.kind === 'attack' ? String(tn.last.itemId || 0) : '', target: last ? String(last.id) : '', spell: '', slot: '', act: '', mode: 'none', check: 'skill:athletics', cost: defaultCost(k, tn) });
+    if (!c || !c.me) return;
+    const tn = c.t;
+    if (tn.pending || tn.dmg) { toast('Спершу заверши попередню дію', true); return; }
+    // ціль і зброя за замовчуванням — як в останній дії
+    const last = ['attack', 'spell', 'reaction'].includes(k) && tn.last && tn.last.target && c.cb.list.find((x) => x.id === tn.last.target && !(x.kind === 'npc' && x.state === 'dead'));
+    const m = { type: 'cbAct', k, item: k === 'attack' && tn.last && tn.last.kind === 'attack' ? String(tn.last.itemId || 0) : '', target: last ? String(last.id) : '', spell: '', slot: '', act: '', mode: '', check: 'skill:athletics', cost: '', ract: k === 'reaction' ? 'attack' : '' };
+    if (k === 'attack') {
+      const modes = R.attackModeList(c.ch.sheet, cbCtx(c));
+      m.mode = (modes.find((x) => x.mode === 'flurry2' && x.ok) || modes.find((x) => x.ok) || modes[0] || { mode: 'main' }).mode;
+    }
+    cbFixCost(m, c);
+    openModal(m);
   },
   cbActPick: ({ f, v }) => {
     const m = S.modal;
     m[f] = m[f] === v && f === 'target' ? '' : v;
     const c = myCombat();
-    const tn = (c && c.t) || TURN0;
-    if (f === 'spell') {
-      const sp = cbSpells(currentChar())[Number(v)];
-      const ch = currentChar();
+    if (!c) return;
+    const ch = c.ch;
+    const spellList = m.k === 'reaction' ? cbSpells(ch).filter((x) => R.spellCastCost(R.spellByName(x.name)) === 'reaction') : cbSpells(ch);
+    if (f === 'ract' && v.startsWith('sp:')) { m.spell = 0; m.ract = v; }
+    if (f === 'spell' || (f === 'ract' && v.startsWith('sp:'))) {
+      const sp = m.k === 'reaction' ? spellList[Number(String(m.ract).slice(3))] : spellList[Number(m.spell)];
+      if (m.k === 'reaction') m.spell = 0;
       const max = R.sheetSlots(ch.sheet);
       const used = ch.sheet.spell.slotsUsed || [];
       m.slot = sp && sp.level > 0 ? (Array.from({ length: 9 }, (_, i) => i + 1).find((L) => L >= sp.level && (max[L - 1] || 0) - (used[L - 1] || 0) > 0) || '') : 0;
-      const info = sp && spellInfo(sp.name);
-      m.mode = spellMode(info);
-      m.cost = defaultCost('spell', tn, spellCost(info));
+      m.mode = spellMode(sp && spellInfo(sp.name));
     }
-    if (f === 'act') m.cost = defaultCost(v === 'move' ? 'move' : 'std', tn, v === 'res:actionSurge' ? 'free' : v.startsWith('res:') ? 'bonus' : 'action');
+    if (f !== 'cost' && f !== 'target') cbFixCost(m, c);
+    renderModal();
+  },
+  // 🔒 витрата поза правилами — запропонувати попросити майстра
+  cbLocked: async ({ v }) => {
+    const c = myCombat();
+    if (!c) return;
+    const text = cbAskText(S.modal, c, v);
+    if (!(await confirmBox(`${t('За правилами так не можна. Попросити майстра дозволити виняток?')}\n${text}`))) return;
+    await reloadAfter(() => api('combatAsk', { charId: c.ch.id, text }), '🙋 Прохання надіслано майстру');
+    renderModal();
+  },
+  cbAsk: async () => {
+    const c = myCombat();
+    if (!c) return;
+    const text = cbAskText(S.modal, c, '');
+    await reloadAfter(() => api('combatAsk', { charId: c.ch.id, text }), '🙋 Прохання надіслано майстру');
     renderModal();
   },
   cbActSave: async () => {
     const m = S.modal;
-    const ch = currentChar();
-    const p = { charId: ch.id, kind: m.k === 'std' ? 'std' : m.k, target: m.target ? Number(m.target) : undefined, cost: m.cost || undefined };
-    if (m.k === 'attack') { if (m.item === '') { toast('Обери, чим атакуєш', true); return; } p.itemId = Number(m.item) || undefined; }
-    if (m.k === 'spell') {
-      const sp = cbSpells(ch)[Number(m.spell)];
-      if (!sp) { toast('Обери закляття', true); return; }
+    const c = myCombat();
+    if (!c) return;
+    const ch = c.ch;
+    const req = cbReq(m, c);
+    if (!req) { toast('Обери дію', true); return; }
+    const p = { charId: ch.id, target: m.target ? Number(m.target) : undefined, cost: m.cost || undefined };
+    if (req.kind === 'attack') {
+      if (m.item === '') { toast('Обери, чим атакуєш', true); return; }
+      Object.assign(p, { kind: 'attack', mode: req.mode, itemId: Number(m.item) || 0 });
+    } else if (req.kind === 'spell') {
+      const list = m.k === 'reaction' ? cbSpells(ch).filter((x) => x.name === req.name) : cbSpells(ch);
+      const sp = m.k === 'reaction' ? list[0] : list[Number(m.spell)];
       if (sp.level > 0 && !m.slot) { toast('Немає вільної комірки', true); return; }
-      p.spell = sp.name;
-      p.slot = sp.level > 0 ? Number(m.slot) : 0;
-      p.mode = m.mode;
-    }
-    if (m.k === 'std') {
-      if (!m.act) { toast('Обери дію', true); return; }
-      if (m.act.startsWith('res:')) { p.kind = 'feature'; p.resId = m.act.slice(4); } else if (m.act === 'check') {
-        p.kind = 'check';
-        p.key = m.check;
-        const [kk, kv] = m.check.split(':');
-        p.label = kk === 'skill' ? R.SKILLS[kv][0] : `Перевірка: ${R.ABILITY_NAMES[kv]}`;
-      } else p.act = m.act;
-    }
-    const r = await reloadAfter(() => api('combatAction', p), '📝 Записано в хроніку бою');
+      Object.assign(p, { kind: 'spell', spell: sp.name, slot: sp.level > 0 ? Number(m.slot) : 0, mode: m.mode });
+    } else if (req.kind === 'item') Object.assign(p, { kind: 'item', itemId: Number(m.item) });
+    else if (req.kind === 'check') {
+      const [kk, kv] = m.check.split(':');
+      Object.assign(p, { kind: 'check', key: m.check, label: kk === 'skill' ? R.SKILLS[kv][0] : `Перевірка: ${R.ABILITY_NAMES[kv]}` });
+    } else if (req.kind === 'feature') Object.assign(p, { kind: 'feature', resId: req.resId });
+    else if (req.kind === 'rfeat') Object.assign(p, { kind: 'rfeat', name: req.name });
+    else Object.assign(p, { kind: 'std', act: req.act });
+    const it = req.kind === 'item' && ch.items.find((x) => x.id === p.itemId);
+    const r = await reloadAfter(() => api('combatAction', p), it ? `Використано: ${it.data.name}` : '📝 Записано в хроніку бою');
     if (!r) return;
     closeModal();
     // атака / перевірка чекає кидка — одразу на вкладку 🎲 з виставленими кубиками
@@ -3553,22 +3722,13 @@ const ACT = {
   },
   cbGoRoll: () => {
     const c = myCombat();
-    if (c && c.mine && cbPreset(c.ch, c.t)) { tapFx(); render(); }
+    if (c && c.me && cbPreset(c.ch, c.t)) { tapFx(); render(); }
   },
   cbCancel: async () => {
     const ch = currentChar();
     if (!(await confirmBox('Скасувати дію? Витрата повернеться.'))) return;
     const r = await reloadAfter(() => api('combatAction', { charId: ch.id, kind: 'cancel' }), 'Дію скасовано');
     if (r) { S.tab = 'combat'; render(); }
-  },
-  cbUseItem: async ({ id }) => {
-    const ch = currentChar();
-    const it = ch && ch.items.find((x) => x.id === Number(id));
-    if (!it) return;
-    const c = myCombat();
-    const r = await reloadAfter(() => (c && c.mine ? api('combatAction', { charId: ch.id, kind: 'item', itemId: it.id, cost: (S.modal && S.modal.cost) || undefined })
-      : api('useItem', { itemId: it.id, qty: 1 })), `Використано: ${it.data.name}`);
-    if (r) closeModal();
   },
   cbEndTurn: async () => {
     const ch = currentChar();
@@ -3624,6 +3784,11 @@ const ACT = {
   fxStdInfo: ({ k }, el) => {
     const d = R.EFFECTS[k];
     if (d) showTip(el, `${d.icon} ${t(d.name)}`, `<p style="margin:0">${esc(d.desc)}</p>`);
+  },
+  cbAllow: async ({ id, v }) => {
+    const { ev } = findCb(id);
+    if (!ev) return;
+    await reloadAfter(() => api('combatAllow', { roomId: roomId(), id: Number(id), allow: v === '1' }), v === '1' ? '🔓 Виняток дозволено' : 'Без винятку');
   },
   cbDmgApply: async ({ id, n, r }) => {
     await reloadAfter(() => api('enemyHp', { roomId: roomId(), id: Number(id), delta: -Number(n), fromRoll: Number(r) }));

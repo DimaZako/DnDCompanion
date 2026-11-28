@@ -1043,31 +1043,82 @@ async function turnStartEffects(c, room, charId) {
   }
 }
 const cbName = (r) => (r.num ? `${r.name} ${r.num}` : r.name);
-// стан ходу: action/bonus — витрачено, attacks — ще атак у поточній дії «Атака»,
+// стан ходу (див. R.TURN_BLANK): витрачені дія / бонусна дія / реакція / дія прискорення, атаки, що лишились,
 // pending — дія, що чекає кидка й рішення майстра, dmg — влучили, гравець кидає шкоду, last — чим закінчилась остання
-const turnOf = (r) => ({ action: 0, bonus: 0, attacks: 0, pending: null, dmg: null, last: null, ...(r.turn ? JSON.parse(r.turn) : {}) });
-const noPrev = (p) => { if (!p) return null; const { prev, ...x } = p; return x; };
-const turnPublic = (t) => ({ action: t.action, bonus: t.bonus, attacks: t.attacks, pending: noPrev(t.pending), dmg: noPrev(t.dmg), last: noPrev(t.last) });
+const turnOf = (r) => R.turnState(r.turn ? JSON.parse(r.turn) : null);
+const noPrev = (p) => { if (!p) return null; const { prev, refund, ...x } = p; return x; };
+const turnPublic = (t) => ({ ...t, pending: noPrev(t.pending), dmg: noPrev(t.dmg), last: noPrev(t.last) });
 const saveTurn = (c, id, t) => run(c.db, 'UPDATE combatants SET turn = ? WHERE id = ?', JSON.stringify(t), id);
-// учасник бою, чий зараз хід, якщо це персонаж ch
-async function myTurnRow(c, room, ch) {
+// учасник бою — персонаж ch (у будь-чий хід); isTurn — чи зараз його хід
+async function combatRowOf(c, room, ch) {
   const evId = await charEventId(c, ch.id);
   const ev = evId && (await first(c.db, 'SELECT * FROM events WHERE id = ? AND room_id = ? AND ended_at IS NULL', evId, room.id));
-  const cur = ev && ev.round && ev.turn_id ? await first(c.db, 'SELECT * FROM combatants WHERE id = ? AND event_id = ?', ev.turn_id, ev.id) : null;
-  return cur && cur.char_id === ch.id ? { ev, cur } : null;
+  if (!ev || !ev.round) return null;
+  const row = await first(c.db, 'SELECT * FROM combatants WHERE event_id = ? AND char_id = ?', ev.id, ch.id);
+  return row ? { ev, cur: row, isTurn: ev.turn_id === row.id } : null;
 }
-// витрата дії / бонусної дії / атаки з дії «Атака»
-function spendTurn(t, cost, apa, isAttack) {
-  if (isAttack && cost !== 'bonus' && t.attacks > 0) { t.attacks -= 1; return; }
-  if (cost === 'free') return;
-  if (cost === 'bonus') {
-    if (t.bonus) fail('Бонусну дію вже використано');
-    t.bonus = 1;
-    return;
+// зброя персонажа для правил бою (стара зброя без шкоди — з каталогу)
+async function charWeaponsSrv(c, charId) {
+  return (await all(c.db, 'SELECT id, data, qty FROM items WHERE char_id = ?', charId)).map((it) => {
+    let d = JSON.parse(it.data);
+    if (d.type === 'weapon' && !d.damage && d.catalogId && CATALOG_BY_ID[d.catalogId]) {
+      const b = CATALOG_BY_ID[d.catalogId];
+      d = { ...d, damage: b.damage, dmgType: b.dmgType, props: d.props || b.props, ranged: b.ranged, cat: d.cat || b.cat };
+    }
+    return { id: it.id, d, qty: it.qty };
+  }).filter((w) => w.d.type === 'weapon' || (['staff', 'rod'].includes(w.d.type) && w.d.damage));
+}
+// накласти ефект на персонажа (той самий стандартний не дублюється — оновлюється тривалість)
+async function putEffect(c, room, ch, key, n, unit, data) {
+  const def = key ? R.EFFECTS[key] : null;
+  if (!data) data = { name: def.name, icon: def.icon };
+  const d = fxDuration(n, unit, def);
+  const ex = key ? await first(c.db, 'SELECT id FROM char_effects WHERE char_id = ? AND key = ?', ch.id, key) : null;
+  let id;
+  if (ex) {
+    await run(c.db, 'UPDATE char_effects SET n = ?, unit = ? WHERE id = ?', d.n, d.unit, ex.id);
+    id = ex.id;
+  } else {
+    const cnt = await first(c.db, 'SELECT COUNT(*) AS n FROM char_effects WHERE char_id = ?', ch.id);
+    if (cnt.n >= MAX_CHAR_EFFECTS) fail('На персонажі забагато ефектів — зніми зайві');
+    const r = await run(c.db, 'INSERT INTO char_effects (char_id, room_id, key, data, n, unit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ch.id, room.id, key || null, JSON.stringify(data), d.n, d.unit, now());
+    id = r.meta && r.meta.last_row_id;
   }
-  if (t.action) fail(isAttack ? 'Атак у цій дії не лишилось' : 'Дію вже використано');
-  t.action = 1;
-  if (isAttack) t.attacks = Math.max(0, apa - 1);
+  return { id, d };
+}
+const CB_ACTS_SRV = { dash: '🏃 Ривок', dodge: '🛡️ Ухилення', disengage: '↩️ Відхід', help: '🤝 Допомога', hide: '🫥 Сховатися', ready: '⏳ Підготовка', search: '🔎 Пошук', object: '🖐️ Використати об’єкт', move: '👣 Переміщення' };
+const resLeft = (s) => Object.fromEntries(R.sheetResources(s).map((r) => [r.id, r.max - r.used]));
+// витрата за обраною ціною; attack — атака чи захоплення з дії «Атака»
+function spendTurn(t, cost, { attack = false, apa = 1, lim = {} } = {}) {
+  const w = R.turnCostLeft(t, cost, lim, attack ? 'attack' : '');
+  if (w) fail(w);
+  if (cost === 'bonus') t.bonus = 1;
+  else if (cost === 'reaction') t.reaction = 1;
+  else if (cost === 'haste') t.haste = 1;
+  else if (cost === 'action') {
+    if (attack && t.attacks > 0) t.attacks -= 1;
+    else {
+      t.action = 1;
+      if (attack) t.attacks = lim.slow ? 0 : Math.max(0, apa - 1);
+    }
+  }
+}
+// використання ресурсів класу (очки ці, чародійства…); n < 0 — повернути
+async function spendRes(c, room, ch, extra, sign = 1) {
+  if (!extra) return;
+  const s = ch.sheet;
+  const all0 = R.sheetResources(s);
+  s.resUsed = { ...(s.resUsed || {}) };
+  for (const [id, n] of Object.entries(extra)) {
+    const r = all0.find((x) => x.id === id);
+    if (!r) fail('Невідомий ресурс');
+    const used = Math.max(0, Math.min(r.max, r.used + sign * n));
+    if (sign > 0 && r.max - r.used < n) fail(`Не вистачає: ${r.name}`);
+    s.resUsed[id] = used;
+    if (sign > 0) await evAct(c, room, ch, 'res', n, { name: r.name });
+  }
+  await saveSheet(c, ch);
 }
 // рішення майстра по кидку, що чекав: попадання → кидок шкоди, промах чи перевірка → назад до меню дій
 // учасник бою, у ході якого записано цей кидок
@@ -1098,6 +1149,11 @@ async function resolvePendingRoll(c, r, m) {
     t.pending = null;
     if (m === 2 && (p.kind === 'attack' || p.kind === 'spellattack')) t.dmg = { ...p, crit: p.crit === 20 };
     else t.last = { ...p, result: m };
+    // «Майстер великої зброї»: крит зброєю ближнього бою у свій хід відкриває бонусну атаку
+    if (m === 2 && p.kind === 'attack' && p.melee && p.crit === 20) {
+      const ev = await first(c.db, 'SELECT turn_id FROM events WHERE id = ?', row.event_id);
+      if (ev && ev.turn_id === row.id) t.gwm = 1;
+    }
   } else if (t.dmg && t.dmg.rollId === r.id) {
     // передумав: промах або зняв позначку
     const p = t.dmg;
@@ -1605,20 +1661,7 @@ const OPS = {
       const e = JSON.parse(r.data);
       data = { name: e.name, icon: e.icon, desc: e.desc, custom: 1 };
     }
-    const d = fxDuration(n, unit, def);
-    // той самий стандартний ефект не дублюється — оновлюється тривалість (рівень виснаження)
-    const ex = key ? await first(c.db, 'SELECT id FROM char_effects WHERE char_id = ? AND key = ?', ch.id, key) : null;
-    let id;
-    if (ex) {
-      await run(c.db, 'UPDATE char_effects SET n = ?, unit = ? WHERE id = ?', d.n, d.unit, ex.id);
-      id = ex.id;
-    } else {
-      const cnt = await first(c.db, 'SELECT COUNT(*) AS n FROM char_effects WHERE char_id = ?', ch.id);
-      if (cnt.n >= MAX_CHAR_EFFECTS) fail('На персонажі забагато ефектів — зніми зайві');
-      const r = await run(c.db, 'INSERT INTO char_effects (char_id, room_id, key, data, n, unit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        ch.id, room.id, key || null, JSON.stringify(data), d.n, d.unit, now());
-      id = r.meta && r.meta.last_row_id;
-    }
+    const { id, d } = await putEffect(c, room, ch, key, n, unit, data);
     await addLog(c, room, `наклав ефект «${data.name}» на ${ch.sheet.name} — ${fxDur(d.n, d.unit)}`);
     return { id, ...d };
   },
@@ -1707,6 +1750,9 @@ const OPS = {
         if (t.last && t.last.dmgRollId === rid) {
           if (t.last.applied) fail('Цю шкоду вже знято');
           t.last.applied = 1;
+          // «Майстер великої зброї»: вбивство зброєю ближнього бою у свій хід
+          const nv0 = hp != null ? int(hp, 0, r.hp_max, r.hp) : Math.max(0, r.hp + int(delta, -99999, 99999, 0));
+          if (nv0 === 0 && r.hp > 0 && t.last.melee && t.last.kind === 'attack' && ev.turn_id === x.id) t.gwm = 1;
           await saveTurn(c, x.id, t);
         }
       }
@@ -1764,39 +1810,108 @@ const OPS = {
     const nx = await advanceTurn(c, room, ev, 1);
     return { turnId: nx && nx.id };
   },
-  // Дія гравця у свій хід: витрачає дію / бонусну дію / атаку; атака й перевірка чекають кидка й рішення майстра
-  async combatAction(c, { charId, kind, itemId, target, spell, slot, act, resId, cost, mode, key, label }) {
+  // Дія гравця в бою: витрата за правилами 5e (R.turnOptions); атака й перевірка чекають кидка й рішення майстра.
+  // У чужий хід — лише реакція та вміння «без дії»; t.allow — виняток від майстра на одну дію
+  async combatAction(c, { charId, kind, itemId, target, spell, slot, act, resId, cost, mode, key, label, name }) {
     const { ch, room } = await charAccess(c, charId, { owner: true });
-    const mine = await myTurnRow(c, room, ch);
-    if (!mine) fail('Зараз не твій хід');
-    const { ev, cur } = mine;
+    const mine = await combatRowOf(c, room, ch);
+    if (!mine) fail('Ти зараз не в бою');
+    const { ev, cur, isTurn } = mine;
     const s = ch.sheet;
     const t = turnOf(cur);
-    const busy = t.pending || t.dmg;
-    if (busy && kind !== 'cancel') fail('Спершу заверши попередню дію');
-    const prev = { action: t.action, bonus: t.bonus, attacks: t.attacks };
-    const cst = ['action', 'bonus', 'free'].includes(cost) ? cost : null;
-    const tgt = target ? await first(c.db, 'SELECT * FROM combatants WHERE id = ? AND event_id = ?', int(target, 0, 1e12, 0), ev.id) : null;
-    const to = tgt ? ` → ${cbName(tgt)}` : '';
-    let text;
+    if ((t.pending || t.dmg) && kind !== 'cancel') fail('Спершу заверши попередню дію');
     if (kind === 'cancel') {
-      // скасувати дію, для якої ще не кидали кубики (витрата повертається)
+      // скасувати дію, для якої ще не кидали кубики (витрата й ресурси повертаються)
       if (!t.pending || t.pending.rollId) fail('Нічого скасовувати');
-      Object.assign(t, t.pending.prev || {});
+      const p = t.pending;
+      if (p.refund) await spendRes(c, room, ch, p.refund, -1);
+      Object.assign(t, p.prev || {});
       t.pending = null;
       await saveTurn(c, cur.id, t);
       await addLog(c, room, 'скасував дію', charActor(c, ch), ev.id);
-      return { ok: true };
-    } else if (kind === 'attack') {
-      spendTurn(t, cst || 'action', R.attacksPerAction(s), true);
-      const it = itemId ? await first(c.db, 'SELECT id, data FROM items WHERE id = ? AND char_id = ?', int(itemId, 0, 1e12, 0), ch.id) : null;
-      text = `⚔️ атакує${to}: ${it ? JSON.parse(it.data).name : 'беззбройний удар'}${cst === 'bonus' ? ' (бонусна дія)' : ''}`;
-      t.pending = { kind: 'attack', itemId: it ? it.id : null, target: tgt ? tgt.id : null, prev };
+      return { ok: true, turn: turnPublic(t) };
+    }
+    const effects = await loadEffects(c, [ch.id]);
+    const lim = R.turnLimits(s, effects);
+    const weapons = await charWeaponsSrv(c, ch.id);
+    const ctx = { t, effects, res: resLeft(s), myTurn: isTurn, weapons };
+    // запит до правил
+    let req;
+    let it = null;
+    let sp = null;
+    if (kind === 'attack') {
+      const m = mode || (isTurn ? 'main' : 'reaction');
+      if (!R.ATTACK_MODES[m]) fail('Невідомий режим атаки');
+      req = { kind: 'attack', mode: m };
     } else if (kind === 'spell') {
-      const sp = { name: str(spell, 80).trim() };
+      sp = { name: str(spell, 80).trim() };
       if (!sp.name) fail('Закляття не знайдено');
+      req = { kind: 'spell', name: sp.name };
+    } else if (kind === 'check') {
+      const k = str(key, 40);
+      if (!/^(skill|ability|save):[a-z_]+$/.test(k)) fail('Невідома перевірка');
+      req = { kind: 'check', key: k };
+    } else if (kind === 'item') {
+      const row = await first(c.db, 'SELECT id, data FROM items WHERE id = ? AND char_id = ?', int(itemId, 0, 1e12, 0), ch.id);
+      if (!row) fail('Предмет не знайдено');
+      it = { id: row.id, d: JSON.parse(row.data) };
+      req = { kind: 'item', item: it.d };
+    } else if (kind === 'feature') {
+      req = { kind: 'feature', resId: str(resId, 40) };
+    } else if (kind === 'rfeat') {
+      const nm = str(name, 80);
+      if (nm === 'ready') { if (!t.readied) fail('Немає підготовленої дії'); } else if (!R.reactionFeatures(s).some((f) => f.id === nm)) fail('Немає такого вміння');
+      req = { kind: 'rfeat', name: nm };
+    } else {
+      if (!CB_ACTS_SRV[act]) fail('Невідома дія');
+      req = { kind: 'std', act };
+    }
+    const rules = R.turnOptions(s, req, ctx);
+    const exc = !!t.allow;
+    let o;
+    if (exc) {
+      // виняток від майстра: будь-яка витрата, правила й стани не заважають
+      const cc = R.COSTS.includes(cost) ? cost : (R.defaultOption(rules) || { cost: 'action' }).cost;
+      o = rules.opts.find((x) => x.cost === cc) || { cost: cc, note: 'Виняток від майстра', extra: null };
+    } else {
+      if (rules.why) fail(rules.why);
+      o = cost ? rules.opts.find((x) => x.cost === cost) : R.defaultOption(rules);
+      if (!o) fail(`За правилами ця дія не може коштувати «${R.COST_NAMES[cost] || cost}»`);
+      if (!o.ok) fail(o.why || 'Зараз не можна');
+    }
+    const prev = JSON.parse(JSON.stringify({ ...t, pending: null, dmg: null, last: t.last, ask: null }));
+    const tgt = target ? await first(c.db, 'SELECT * FROM combatants WHERE id = ? AND event_id = ?', int(target, 0, 1e12, 0), ev.id) : null;
+    const to = tgt ? ` → ${cbName(tgt)}` : '';
+    const costTag = ['bonus', 'reaction', 'haste'].includes(o.cost) ? ` · ${R.COST_NAMES[o.cost].toLowerCase()}` : '';
+    const apa = R.attacksPerAction(s);
+    let text;
+    if (kind === 'attack') {
+      const m = req.mode;
+      const okW = R.modeWeapons(m, s, weapons, t);
+      const wid = int(itemId, 0, 1e12, 0);
+      const w = okW.find((x) => x.id === wid) || (exc && weapons.find((x) => x.id === wid)) || (wid === 0 && exc ? { id: 0, d: null } : null);
+      if (!w) fail('Ця зброя не підходить для такої атаки');
+      spendTurn(t, o.cost, { attack: m === 'main', apa, lim });
+      await spendRes(c, room, ch, o.extra);
+      const tags = R.weaponTags(w.d);
+      t.atkN = (t.atkN || 0) + 1;
+      if (m === 'main' || m === 'haste') {
+        t.atk = 1;
+        t.w = { ...t.w, light: t.w.light || (tags.melee && !!tags.light), oneMelee: t.w.oneMelee || (tags.melee && tags.oneHanded), monk: t.w.monk || !!tags.monk, polearm: t.w.polearm || !!tags.polearm, oneHanded: t.w.oneHanded || tags.oneHanded !== false };
+        t.ids = [...new Set([...(t.ids || []), w.id])];
+      }
+      if (m === 'flurry') { t.battacks = 1; t.bmode = 'flurry'; }
+      if (m === 'flurry2') { t.battacks = Math.max(0, t.battacks - 1); if (!t.battacks) t.bmode = ''; }
+      const M = R.ATTACK_MODES[m];
+      const wn = w.d ? w.d.name : 'Беззбройний удар';
+      text = m === 'main' ? `⚔️ атакує${to}: ${wn}${costTag}` : `⚔️ атакує${to}: ${wn} (${M.name})`;
+      t.pending = { kind: 'attack', mode: m, itemId: w.id || null, target: tgt ? tgt.id : null, melee: !!tags.melee, prev, refund: o.extra || null };
+      if (m === 'polearm') t.pending.dice = { 4: 1 };
+      if (m === 'offhand' && !R.hasFightingStyle(s, 'twf')) t.pending.noMod = 1;
+    } else if (kind === 'spell') {
+      const info = R.spellByName(sp.name);
       const lvl = int(slot, 0, 9, 0);
-      spendTurn(t, cst || 'action', 1, false);
+      spendTurn(t, o.cost, { lim });
       if (lvl > 0) {
         const max = R.sheetSlots(s);
         const used = (s.spell.slotsUsed || []).slice(0, 9);
@@ -1807,42 +1922,77 @@ const OPS = {
         await saveSheet(c, ch);
         await evAct(c, room, ch, 'slot', 1, { lvl });
       }
-      text = `✨ творить «${sp.name}»${lvl > 0 ? ` (${lvl} коло)` : ''}${to}`;
-      if (mode === 'attack') t.pending = { kind: 'spellattack', spell: sp.name, slot: lvl, target: tgt ? tgt.id : null, prev };
+      await spendRes(c, room, ch, o.extra);
+      // правило бонусного закляття стежить лише за власним ходом
+      if (isTurn) t.spells = [...(t.spells || []), { lvl: info ? info.level : lvl, cost: o.cost }];
+      text = `✨ творить «${sp.name}»${lvl > 0 ? ` (${lvl} коло)` : ''}${to}${costTag}`;
+      if (mode === 'attack') t.pending = { kind: 'spellattack', spell: sp.name, slot: lvl, target: tgt ? tgt.id : null, prev, refund: o.extra || null };
     } else if (kind === 'check') {
-      const k = str(key, 40);
-      if (!/^(skill|ability|save):[a-z_]+$/.test(k)) fail('Невідома перевірка');
-      spendTurn(t, cst || 'action', 1, false);
-      text = `🎲 перевірка: ${str(label, 60) || k}${to}`;
-      t.pending = { kind: 'check', key: k, target: tgt ? tgt.id : null, prev };
+      spendTurn(t, o.cost, { attack: !!o.attack, apa, lim });
+      if (o.attack) { t.atk = 1; t.atkN = (t.atkN || 0) + 1; }
+      text = `🎲 перевірка: ${str(label, 60) || req.key}${to}${costTag}`;
+      t.pending = { kind: 'check', key: req.key, target: tgt ? tgt.id : null, prev };
     } else if (kind === 'item') {
-      const it = await first(c.db, 'SELECT id, data FROM items WHERE id = ? AND char_id = ?', int(itemId, 0, 1e12, 0), ch.id);
-      if (!it) fail('Предмет не знайдено');
-      spendTurn(t, cst || 'action', 1, false);
+      spendTurn(t, o.cost, { lim });
       await OPS.useItem(c, { itemId: it.id, qty: 1 });
+      if (t.allow) t.allow = 0;
       await saveTurn(c, cur.id, t);
       return { ok: true, turn: turnPublic(t) };
     } else if (kind === 'feature') {
-      const r = R.sheetResources(s).find((x) => x.id === resId);
+      const r = R.sheetResources(s).find((x) => x.id === req.resId);
       if (!r) fail('Невідомий ресурс');
       if (r.used >= r.max) fail(`«${r.name}» вже витрачено`);
-      // «Сплеск дій» не коштує дії й повертає її; інші вміння — бонусною дією
-      spendTurn(t, cst || (r.id === 'actionSurge' ? 'free' : 'bonus'), 1, false);
-      if (r.id === 'actionSurge') { t.action = 0; t.attacks = 0; }
+      spendTurn(t, o.cost, { lim });
+      // «Сплеск дій» повертає дію (раз за хід)
+      if (r.id === 'actionSurge') { t.action = 0; t.attacks = 0; t.surged = 1; }
       s.resUsed = { ...(s.resUsed || {}), [r.id]: r.used + 1 };
       await saveSheet(c, ch);
       await evAct(c, room, ch, 'res', 1, { name: r.name });
-      text = `🌟 використовує «${r.name}»${to}`;
+      // «Лють» — одразу ефект на персонажі (1 хвилина = 10 раундів)
+      if (r.id === 'rage') await putEffect(c, room, ch, 'rage');
+      text = `🌟 використовує «${r.name}»${to}${costTag}`;
+    } else if (kind === 'rfeat') {
+      spendTurn(t, o.cost, { lim });
+      if (req.name === 'ready') { t.readied = 0; text = `⚡ виконує підготовлену дію${to}`; }
+      else text = `⚡ ${R.reactionFeatures(s).find((f) => f.id === req.name).name}${to}`;
     } else {
-      const ACTS = { dash: '🏃 Ривок', dodge: '🛡️ Ухилення', disengage: '↩️ Відхід', help: '🤝 Допомога', hide: '🫥 Сховатися', ready: '⏳ Підготовка', search: '🔎 Пошук', move: '👣 Переміщення' };
-      if (!ACTS[act]) fail('Невідома дія');
-      spendTurn(t, cst || (act === 'move' ? 'free' : 'action'), 1, false);
-      text = `${ACTS[act]}${to}`;
+      spendTurn(t, o.cost, { lim });
+      await spendRes(c, room, ch, o.extra);
+      if (act === 'ready') t.readied = 1;
+      text = `${CB_ACTS_SRV[act]}${to}${costTag}`;
     }
+    if (exc) { t.allow = 0; text += ' · виняток майстра'; }
+    t.ask = null;
+    t.denied = null;
     await saveTurn(c, cur.id, t);
     await evAct(c, room, ch, 'act', 1, { text });
     await addLog(c, room, text, charActor(c, ch), ev.id);
     return { ok: true, turn: turnPublic(t) };
+  },
+  // Гравець просить майстра дозволити дію поза правилами
+  async combatAsk(c, { charId, text }) {
+    const { ch, room } = await charAccess(c, charId, { owner: true });
+    const mine = await combatRowOf(c, room, ch);
+    if (!mine) fail('Ти зараз не в бою');
+    const t = turnOf(mine.cur);
+    t.ask = str(text, 120).trim() || 'Дія поза правилами';
+    t.denied = null;
+    await saveTurn(c, mine.cur.id, t);
+    await addLog(c, room, `🙋 просить виняток: ${t.ask}`, charActor(c, ch), mine.ev.id);
+    return { ok: true };
+  },
+  // Майстер дозволяє (на одну дію) чи відмовляє
+  async combatAllow(c, { roomId, id, allow }) {
+    const { room, ev, r } = await combatantOf(c, roomId, id);
+    if (!r.char_id) fail('Лише для персонажів');
+    const t = turnOf(r);
+    const asked = t.ask;
+    t.allow = allow ? 1 : 0;
+    t.denied = !allow && asked ? asked : null;
+    t.ask = null;
+    await saveTurn(c, r.id, t);
+    await addLog(c, room, allow ? `🔓 виняток для ${r.name}${asked ? `: ${asked}` : ''}` : `✗ без винятку для ${r.name}`, undefined, ev.id);
+    return { ok: true };
   },
 
   // ---------- Події майстра (можуть іти паралельно; персонаж — в одній події) ----------
@@ -1974,7 +2124,7 @@ const OPS = {
     const critTxt = crit === 20 ? ' · природна 20!' : crit === 1 ? ' · природна 1' : '';
     await addLog(c, room, `🎲 ${label}: ${expr} = ${total}${critTxt}`, charActor(c, ch), undefined, rollId);
     // хід у бою: кидок атаки / перевірки йде на рішення майстра; кидок шкоди після влучання завершує дію
-    const mine = await myTurnRow(c, room, ch);
+    const mine = await combatRowOf(c, room, ch);
     if (mine) {
       const t = turnOf(mine.cur);
       const atk = ['attack', 'spellattack'].includes(kind);

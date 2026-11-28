@@ -405,7 +405,7 @@ export function weaponAttack(sheet, d) {
   const dex = mod(sheet.abilities.dex);
   let abMod = str;
   if (d.ranged) abMod = dex;
-  if (props.includes('фехтув')) abMod = Math.max(str, dex);
+  if (props.includes('фехтув') || (sheet.classId === 'monk' && weaponTags(d).monk)) abMod = Math.max(str, dex);
   const magic = Number(d.bonus || 0);
   const noProf = weaponProficient(sheet, d) === false;
   const hit = abMod + (noProf ? 0 : sheetProf(sheet)) + magic + (d.ranged && hasStyle(sheet, 'archery') ? 2 : 0);
@@ -981,4 +981,330 @@ export function checkSpells(sheet, oldList, newList, mode) {
 export function spellPoolUsage(sheet, list) {
   const plan = spellPlan(sheet);
   return plan.pools.map((p) => ({ ...p, used: (list || []).filter((e) => e.sid && e.by !== 'm' && e.pool === p.id).length }));
+}
+
+// ================= Витрати дій у бою (5e, PHB 2014; зілля — бонусною дією) =================
+// cost: action — дія, bonus — бонусна дія, reaction — реакція, free — без витрати, haste — додаткова дія від «Прискорення»
+export const COSTS = ['action', 'bonus', 'reaction', 'free', 'haste'];
+export const COST_NAMES = { action: 'Дія', bonus: 'Бонусна дія', reaction: 'Реакція', free: 'Без витрати', haste: 'Дія прискорення' };
+export const COST_ICONS = { action: '●', bonus: '◐', reaction: '⚡', free: '○', haste: '⏩' };
+// стан ходу учасника бою
+export const TURN_BLANK = { action: 0, bonus: 0, reaction: 0, haste: 0, attacks: 0, battacks: 0, atk: 0, atkN: 0, w: {}, ids: [], spells: [], surged: 0, gwm: 0, readied: 0, allow: 0, ask: null, pending: null, dmg: null, last: null };
+export const turnState = (t) => ({ ...TURN_BLANK, ...(t || {}) });
+
+// Властивості зброї для правил бою
+const POLEARMS = ['glaive', 'halberd', 'quarterstaff', 'spear'];
+export function weaponTags(d) {
+  if (!d) return { melee: true, unarmed: true, monk: true };
+  const p = String(d.props || '').toLowerCase();
+  const id = d.catalogId || d.kind || '';
+  const twoHanded = p.includes('дворуч');
+  const heavy = p.includes('важк');
+  const melee = !d.ranged;
+  return {
+    melee, light: p.includes('легк'), heavy, twoHanded, oneHanded: !twoHanded,
+    polearm: melee && (POLEARMS.includes(id) || /^(глефа|алебарда|бойовий посох|спис)$/i.test(d.name || '')),
+    handCrossbow: id === 'hand_crossbow' || /ручний арбалет/i.test(d.name || ''),
+    // зброя монаха: короткий меч і проста зброя ближнього бою без «дворучна» й «важка»
+    monk: melee && !twoHanded && !heavy && (id === 'shortsword' || d.cat === 'simple_melee' || /^Проста ближнього/.test(d.group || '')),
+  };
+}
+export const martialDie = (s) => (s.level >= 17 ? 10 : s.level >= 11 ? 8 : s.level >= 5 ? 6 : 4);
+
+const hasFeat = (s, id) => (s.feats || []).includes(id);
+const isSub = (s, cls, sub, lvl = 1) => s.classId === cls && s.subclassId === sub && s.level >= lvl;
+const isCls = (s, cls, lvl = 1) => s.classId === cls && s.level >= lvl;
+let SPELL_BY_NAME = null;
+export function spellByName(name) {
+  if (!SPELL_BY_NAME) SPELL_BY_NAME = new Map(Object.values(SPELLS).map((x) => [x.name, x]));
+  return SPELL_BY_NAME.get(name) || null;
+}
+export function spellCastCost(sp) {
+  const tm = (sp && sp.time) || '1 дія';
+  if (/бонусн/.test(tm)) return 'bonus';
+  if (/реакц/.test(tm)) return 'reaction';
+  if (/^1 дія/.test(tm)) return 'action';
+  return 'long';
+}
+
+// Стани, що забирають дії, реакції чи рух
+const INCAP = ['unconscious', 'paralyzed', 'petrified', 'stunned', 'incapacitated'];
+const NO_MOVE = ['paralyzed', 'petrified', 'stunned', 'unconscious', 'grappled', 'restrained'];
+export function turnLimits(sheet, effects) {
+  const fx = effects || [];
+  const keys = new Set(fx.map((e) => e.key).filter(Boolean));
+  const exh = fx.find((e) => e.key === 'exhaustion');
+  const inc = INCAP.find((k) => keys.has(k));
+  const nm = NO_MOVE.find((k) => keys.has(k));
+  return {
+    down: !!(sheet.hp && sheet.hp.cur <= 0),
+    incap: sheet.hp && sheet.hp.cur <= 0 ? 'Без тями (0 ХП) — лише рятівні кидки від смерті' : inc ? `Стан «${EFFECTS[inc].name}» — ні дій, ні реакцій` : '',
+    noMove: nm ? `Стан «${EFFECTS[nm].name}» — швидкість 0` : exh && exh.n >= 5 ? 'Виснаження 5 — швидкість 0' : '',
+    haste: keys.has('haste'), slow: keys.has('slow'), rage: keys.has('rage'),
+  };
+}
+
+// Чи вільна витрата в цьому ході
+function costLeft(t, cost, lim, kind) {
+  if (cost === 'free') return '';
+  if (cost === 'reaction') return lim.slow ? 'Уповільнення — без реакцій' : t.reaction ? 'Реакцію вже використано' : '';
+  if (cost === 'haste') return !lim.haste ? 'Немає «Прискорення»' : t.haste ? 'Дію прискорення вже використано' : '';
+  if (cost === 'bonus') {
+    if (t.bonus) return 'Бонусну дію вже використано';
+    if (lim.slow && t.action) return 'Уповільнення — або дія, або бонусна дія';
+    return '';
+  }
+  // дія: атаки, що лишились у дії «Атака», не потребують нової дії
+  if (kind === 'attack' && t.attacks > 0) return '';
+  if (t.action) return kind === 'attack' && t.atk ? 'Атак у цій дії не лишилось' : 'Дію вже використано';
+  if (lim.slow && t.bonus) return 'Уповільнення — або дія, або бонусна дія';
+  return '';
+}
+const opt = (cost, note = '', extra = null, more = {}) => ({ cost, note, extra, ...more });
+
+// Режими атаки: звичайна (дія «Атака»), бонусні атаки за вміннями й рисами, атака реакцією
+export const ATTACK_MODES = {
+  main: { name: 'Атака', cost: 'action' },
+  haste: { name: 'Атака прискорення', cost: 'haste' },
+  offhand: { name: 'Друга зброя', cost: 'bonus', note: 'Бій двома зброями' },
+  martial: { name: 'Удар без зброї', cost: 'bonus', note: 'Бойові мистецтва' },
+  flurry: { name: 'Шквал ударів', cost: 'bonus', note: '2 удари · 1 ці', extra: { ki: 1 }, strikes: 2 },
+  flurry2: { name: 'Ще удар шквалу', cost: 'free', note: 'Шквал ударів' },
+  polearm: { name: 'Тупий кінець древка', cost: 'bonus', note: 'Майстер древкової зброї' },
+  crossbow: { name: 'Ручний арбалет', cost: 'bonus', note: 'Експерт арбалета' },
+  gwm: { name: 'Атака великою зброєю', cost: 'bonus', note: 'Майстер великої зброї' },
+  frenzy: { name: 'Шаленство', cost: 'bonus', note: 'Берсерк у люті' },
+  warpriest: { name: 'Атака жерця війни', cost: 'bonus', note: 'Жрець війни', extra: { warPriest: 1 } },
+  battlemagic: { name: 'Атака після закляття', cost: 'bonus', note: 'Бойова магія' },
+  reaction: { name: 'Атака реакцією', cost: 'reaction', note: 'Атака при нагоді' },
+};
+// які предмети годяться для режиму (id 0 — беззбройний удар)
+export function modeWeapons(mode, sheet, weapons, t) {
+  const W = [...weapons, { id: 0, d: null, qty: 1 }];
+  const tg = (w) => weaponTags(w.d);
+  const dual = hasFeat(sheet, 'dual_wielder');
+  switch (mode) {
+    case 'offhand': return weapons.filter((w) => { const x = tg(w); return x.melee && (x.light || (dual && x.oneHanded)) && ((t.ids || []).some((i) => i !== w.id) || !(t.ids || []).includes(w.id) || w.qty > 1); });
+    case 'martial': case 'flurry': case 'flurry2': return W.filter((w) => w.id === 0);
+    case 'polearm': return weapons.filter((w) => tg(w).polearm);
+    case 'crossbow': return weapons.filter((w) => tg(w).handCrossbow);
+    case 'gwm': return weapons.filter((w) => tg(w).melee);
+    case 'frenzy': case 'reaction': return W.filter((w) => tg(w).melee);
+    default: return W;
+  }
+}
+// чи є в персонажа такий режим атаки взагалі
+function hasMode(mode, sheet, ctx, t, lim) {
+  const W = ctx.weapons || [];
+  const dual = hasFeat(sheet, 'dual_wielder');
+  switch (mode) {
+    case 'main': case 'reaction': return true;
+    case 'haste': return lim.haste;
+    // дві зброї: хоча б дві легкі (з рисою — одноручні) зброї ближнього бою
+    case 'offhand': return W.filter((w) => { const x = weaponTags(w.d); return x.melee && (x.light || (dual && x.oneHanded)); }).reduce((a, w) => a + Math.max(1, w.qty || 1), 0) >= 2;
+    case 'martial': return isCls(sheet, 'monk');
+    case 'flurry': return isCls(sheet, 'monk', 2);
+    case 'flurry2': return t.battacks > 0 && t.bmode === 'flurry';
+    case 'polearm': return hasFeat(sheet, 'polearm_master') && W.some((w) => weaponTags(w.d).polearm);
+    case 'crossbow': return hasFeat(sheet, 'crossbow_expert') && W.some((w) => weaponTags(w.d).handCrossbow);
+    case 'gwm': return hasFeat(sheet, 'gwm');
+    case 'frenzy': return isSub(sheet, 'barbarian', 'berserker', 3);
+    case 'warpriest': return isSub(sheet, 'cleric', 'war');
+    case 'battlemagic': return isSub(sheet, 'bard', 'valor', 14) || isSub(sheet, 'fighter', 'eldritch_knight', 7);
+    default: return false;
+  }
+}
+// умова режиму в цьому ході ('' — виконано)
+function modeCond(mode, sheet, ctx, t, lim) {
+  const res = ctx.res || {};
+  switch (mode) {
+    case 'offhand': return !t.atk ? 'Спершу атакуй дією «Атака» легкою зброєю' : !(t.w.light || (hasFeat(sheet, 'dual_wielder') && t.w.oneMelee)) ? 'Потрібна атака легкою зброєю ближнього бою' : '';
+    case 'martial': return !t.atk ? 'Спершу атакуй дією «Атака»' : !t.w.monk ? 'Потрібна атака без зброї чи зброєю монаха' : '';
+    case 'flurry': return !t.atk ? 'Одразу після дії «Атака»' : (res.ki || 0) < 1 ? 'Немає очок ці' : '';
+    case 'polearm': return !t.atk || !t.w.polearm ? 'Спершу атакуй дією «Атака» древковою зброєю' : '';
+    case 'crossbow': return !t.atk || !t.w.oneHanded ? 'Спершу атакуй дією «Атака» одноручною зброєю' : '';
+    case 'gwm': return !t.gwm ? 'Після крита чи вбивства зброєю ближнього бою в цьому ході' : '';
+    case 'frenzy': return !lim.rage ? 'Лише в люті' : '';
+    case 'warpriest': return !t.atk ? 'Спершу атакуй дією «Атака»' : (res.warPriest || 0) < 1 ? 'Використання скінчились' : '';
+    case 'battlemagic': {
+      const bard = isSub(sheet, 'bard', 'valor', 14);
+      const okSp = (t.spells || []).some((x) => x.cost === 'action' && (bard || x.lvl === 0 || sheet.level >= 18));
+      return okSp ? '' : !bard && sheet.level < 18 ? 'Спершу замовляння дією' : 'Спершу закляття дією';
+    }
+    default: return '';
+  }
+}
+// чи доступний режим атаки зараз: { ok, why, has }
+export function attackMode(mode, sheet, ctx) {
+  const t = turnState(ctx.t);
+  const lim = turnLimits(sheet, ctx.effects);
+  const M = ATTACK_MODES[mode];
+  if (!M) return { ok: false, has: false, why: 'Невідомий режим атаки' };
+  const has = hasMode(mode, sheet, ctx, t, lim);
+  const myTurn = ctx.myTurn !== false;
+  const why = (!myTurn && M.cost !== 'reaction' ? 'Зараз не твій хід' : '')
+    || lim.incap
+    || (lim.slow && t.atkN >= 1 ? 'Уповільнення — лише одна атака за хід' : '')
+    || modeCond(mode, sheet, ctx, t, lim)
+    || (mode === 'flurry2' ? '' : costLeft(t, M.cost, lim, mode === 'main' ? 'attack' : ''));
+  return { ok: has && !why, has, why: has ? why : 'Немає такого вміння' };
+}
+export function attackModeList(sheet, ctx) {
+  const myTurn = ctx.myTurn !== false;
+  return Object.keys(ATTACK_MODES)
+    .filter((mode) => (myTurn ? mode !== 'reaction' : mode === 'reaction'))
+    .map((mode) => ({ mode, ...ATTACK_MODES[mode], ...attackMode(mode, sheet, ctx) }))
+    .filter((m) => m.has);
+}
+
+// Витрати, дозволені правилами для дії: [{cost, note, extra}], why — чому нічого не можна
+export function turnOptions(sheet, req, ctx) {
+  const t = turnState(ctx.t);
+  const lim = turnLimits(sheet, ctx.effects);
+  const res = ctx.res || {};
+  const L = sheet.level;
+  const myTurn = ctx.myTurn !== false;
+  let opts = [];
+  let why = '';
+  let anytime = false;
+  const k = req.kind;
+  if (k === 'attack') {
+    const M = ATTACK_MODES[req.mode || 'main'];
+    if (!M) return { opts: [], why: 'Невідомий режим атаки' };
+    const r = attackMode(req.mode || 'main', sheet, ctx);
+    const cond = r.has ? modeCond(req.mode || 'main', sheet, ctx, t, lim) : r.why;
+    if (cond) why = cond;
+    else opts = [opt(M.cost, M.note || '', M.extra || null)];
+    if (lim.slow && t.atkN >= 1) why = 'Уповільнення — лише одна атака за хід';
+    anytime = M.cost === 'reaction';
+  } else if (k === 'spell') {
+    const sp = spellByName(req.name);
+    const base = spellCastCost(sp);
+    if (lim.rage) why = 'У люті не можна творити закляття';
+    else if (base === 'long') why = `Закляття твориться ${sp ? sp.time : ''} — довше за хід`;
+    else {
+      opts = [opt(base)];
+      if (base === 'action' && ((sheet.choices || {}).metamagic || []).includes('quickened')) opts.push(opt('bonus', 'Прискорене закляття · 2 очки', { sorcery: 2 }));
+      anytime = base === 'reaction';
+      // правило бонусного закляття: того ходу інші закляття — лише замовляння дією
+      if (myTurn) {
+        const cantripAct = sp && sp.level === 0 && base === 'action';
+        const prior = t.spells || [];
+        opts = opts.map((o) => {
+          if (o.cost === 'bonus' && prior.some((x) => !(x.lvl === 0 && x.cost === 'action'))) return { ...o, why: 'Закляття бонусною дією — лише якщо інші закляття цього ходу були замовляннями дією' };
+          if (prior.some((x) => x.cost === 'bonus') && !(cantripAct && o.cost === 'action')) return { ...o, why: 'Після закляття бонусною дією — лише замовляння дією' };
+          return o;
+        });
+      }
+    }
+  } else if (k === 'std') {
+    const a = req.act;
+    const cunning = isCls(sheet, 'rogue', 2);
+    const ki = isCls(sheet, 'monk', 2);
+    if (a === 'move') { opts = [opt('free')]; if (lim.noMove) why = lim.noMove; }
+    else {
+      opts = [opt('action')];
+      if (['dash', 'disengage'].includes(a)) {
+        if (cunning) opts.push(opt('bonus', 'Хитра дія'));
+        else if (ki) opts.push(opt('bonus', 'Крок вітру · 1 ці', { ki: 1 }));
+      }
+      if (a === 'dodge' && ki) opts.push(opt('bonus', 'Терпляча оборона · 1 ці', { ki: 1 }));
+      if (a === 'hide') {
+        if (cunning) opts.push(opt('bonus', 'Хитра дія'));
+        else if (isCls(sheet, 'ranger', 14)) opts.push(opt('bonus', 'Зникнення'));
+      }
+      if (a === 'object' && isSub(sheet, 'rogue', 'thief', 3)) opts.push(opt('bonus', 'Швидкі руки'));
+      if (['dash', 'disengage', 'hide', 'object'].includes(a)) opts.push(opt('haste', 'Прискорення'));
+    }
+  } else if (k === 'check') {
+    const key = String(req.key || '');
+    const cunning = isCls(sheet, 'rogue', 2);
+    if (key === 'skill:athletics') {
+      // захоплення чи штовхання — замість однієї атаки з дії «Атака»
+      opts = [opt('action', 'Захоплення / штовхання замість атаки', null, { attack: true })];
+      if (hasFeat(sheet, 'shield_master') && t.atk) opts.push(opt('bonus', 'Майстер щита: поштовх'));
+    } else if (key === 'skill:stealth') {
+      opts = [opt('action', 'Сховатися')];
+      if (cunning) opts.push(opt('bonus', 'Хитра дія'));
+      else if (isCls(sheet, 'ranger', 14)) opts.push(opt('bonus', 'Зникнення'));
+      opts.push(opt('haste', 'Прискорення'));
+    } else if (key === 'skill:sleight_of_hand') {
+      opts = [opt('action')];
+      if (isSub(sheet, 'rogue', 'thief', 3)) opts.push(opt('bonus', 'Швидкі руки'));
+    } else if (['skill:perception', 'skill:investigation'].includes(key)) opts = [opt('action', 'Пошук')];
+    else opts = [opt('action')];
+  } else if (k === 'item') {
+    const d = req.item || {};
+    if (d.type === 'potion') opts = [opt('bonus', 'Випити самому'), opt('action', 'Напоїти іншого')];
+    else {
+      opts = [opt('action')];
+      if (isSub(sheet, 'rogue', 'thief', 3) && !['scroll', 'wand', 'rod', 'staff'].includes(d.type) && (d.rarity || 'common') === 'common' && !d.bonus) opts.push(opt('bonus', 'Швидкі руки'));
+    }
+    if (d.type !== 'scroll') opts.push(opt('haste', 'Прискорення'));
+  } else if (k === 'feature') {
+    const id = req.resId;
+    switch (id) {
+      case 'rage': case 'inspiration': case 'secondWind': opts = [opt('bonus')]; break;
+      case 'channel':
+        opts = [opt('action')];
+        if (isSub(sheet, 'paladin', 'vengeance', 3)) opts.push(opt('bonus', 'Обітниця ворожнечі'));
+        if (isSub(sheet, 'cleric', 'war', 2)) opts.push(opt('free', 'Керований удар'));
+        if (isSub(sheet, 'cleric', 'war', 6)) opts.push(opt('reaction', 'Благословення бога війни'));
+        if (isSub(sheet, 'cleric', 'tempest', 2)) opts.push(opt('free', 'Руйнівний гнів'));
+        break;
+      case 'wildshape': opts = [opt('action')]; if (isSub(sheet, 'druid', 'moon', 2)) opts.push(opt('bonus', 'Бойова дика подоба')); break;
+      case 'actionSurge':
+        opts = [opt('free', 'Повертає дію')];
+        if (t.surged) why = 'Сплеск дій — лише раз за хід';
+        break;
+      case 'indomitable': case 'strokeOfLuck': case 'relentless': opts = [opt('free')]; anytime = true; break;
+      case 'superiority': opts = [opt('free', 'Прийом під час атаки'), opt('bonus', 'Прийом бонусною дією'), opt('reaction', 'Прийом реакцією')]; anytime = true; break;
+      case 'ki': opts = [opt('free', 'Приголомшливий удар')]; break;
+      case 'sorcery': opts = [opt('bonus', 'Комірка ↔ очки'), opt('free', 'Метамагія')]; break;
+      case 'arcaneRecovery': why = 'Лише під час короткого відпочинку'; break;
+      case 'warPriest': why = 'Використовується через «⚔️ Атака» → «Атака жерця війни»'; break;
+      default: opts = [opt('action')];
+    }
+  } else if (k === 'rfeat') {
+    // уміння й риси, що спрацьовують реакцією; підготовлена дія
+    opts = [opt('reaction', req.name === 'ready' ? 'Підготовлена дія' : '')];
+    anytime = true;
+  } else why = 'Невідома дія';
+  // поза своїм ходом — лише реакції та вміння «без дії»
+  if (!myTurn) {
+    opts = opts.filter((o) => o.cost === 'reaction' || (anytime && o.cost === 'free'));
+    if (!opts.length && !why) why = 'Зараз не твій хід — лише реакція';
+  }
+  if (!lim.haste) opts = opts.filter((o) => o.cost !== 'haste');
+  // стани
+  const incapOk = k === 'feature' && req.resId === 'relentless';
+  if (lim.incap && !incapOk && !why) why = lim.incap;
+  // що з цього ще вільне
+  opts = opts.map((o) => {
+    if (o.why) return { ...o, ok: false };
+    const w = costLeft(t, o.cost, lim, o.attack || k === 'attack' ? 'attack' : '');
+    const ex = o.extra && Object.entries(o.extra).find(([r, n]) => (res[r] || 0) < n);
+    return { ...o, ok: !w && !ex, why: w || (ex ? 'Не вистачає ресурсу' : '') };
+  });
+  return { opts, why };
+}
+// Що обрати за замовчуванням: перша вільна витрата
+export const defaultOption = (r) => (r.opts.find((o) => o.ok) || r.opts[0] || null);
+export const turnCostLeft = (t, cost, lim, kind) => costLeft(turnState(t), cost, lim, kind);
+export const hasFightingStyle = hasStyle;
+// Уміння й риси, що спрацьовують реакцією (окрім атаки при нагоді й заклять-реакцій)
+export function reactionFeatures(sheet) {
+  const out = [];
+  const seen = new Set();
+  for (const f of sheet.features || []) {
+    if (!/реакцією/i.test(f.desc || '') || /^Канал/.test(f.name || '') || seen.has(f.name)) continue;
+    seen.add(f.name);
+    out.push({ id: `f:${f.name}`, name: f.name, desc: f.desc });
+  }
+  for (const id of ['defensive_duelist', 'mage_slayer', 'sentinel', 'war_caster']) {
+    const ft = FEATS.find((x) => x.id === id);
+    if (ft && hasFeat(sheet, id)) out.push({ id: `feat:${id}`, name: ft.name, desc: ft.desc });
+  }
+  if (hasStyle(sheet, 'protection')) out.push({ id: 'style:protection', name: 'Захист', desc: 'Зі щитом реакцією дай перешкоду атаці по союзнику поруч.' });
+  return out;
 }

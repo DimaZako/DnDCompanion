@@ -582,3 +582,22 @@ body[data-cls] .char-head .xp small { color: color-mix(in srgb, var(--text) 65%,
 .cb-mstep .ev-marks.wide { flex: 1 1 100%; }
 .cb-mstep .btn { flex: none; }
 .cb-meco { flex: 1 1 100%; font-size: 11px; color: var(--hint); white-space: nowrap; }
+/* витрати за правилами 5e: 🔒, виняток від майстра, реакція поза ходом */
+.cb-costs .chip.locked { opacity: .55; border-style: dashed; }
+.cb-costs .chip small, .cb-modes .chip small { opacity: .75; font-weight: 500; }
+.cb-why { color: var(--danger); margin: 6px 0 0; }
+.cb-why.ok { color: #2fbf4a; }
+.cb-mwhy { margin: 4px 0 0; font-size: 12px; }
+.cb-ask { display: block; margin-top: 8px; }
+.cb-exc { margin-top: 8px; font-size: 13px; padding: 6px 9px; border-radius: 9px; background: var(--soft); }
+.cb-exc.ok { color: #2fbf4a; background: color-mix(in srgb, #2fbf4a 12%, var(--soft)); }
+.cb-exc.wait { color: var(--hint); }
+.cb-exc.no { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--soft)); }
+.cb-react { border: 1.5px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.cb-mask { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 14%, var(--soft)); }
+.cb-mask .btn { flex: none; }
+.cb-mask.ok { color: #2fbf4a; background: color-mix(in srgb, #2fbf4a 12%, var(--soft)); }
+.cb-mask .grow { flex: 1 1 150px; min-width: 0; }
+.cb-mstep.off { border-left: 3px solid var(--accent); }
+.cb-exc-btn { font-size: 11px; margin-left: 6px; }
+.cb-meco { white-space: normal; }
